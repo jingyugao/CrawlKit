@@ -1,4 +1,4 @@
-# ✅ PWUtil - 测试环境部署完成
+# ✅ pagepool - 测试环境部署完成
 
 ## 🎉 部署状态
 
@@ -15,8 +15,8 @@
 ## 📁 项目文件结构
 
 ```
-pwutil/
-├── pwutil/                           # 核心库
+pagepool/
+├── pagepool/                           # 核心库
 │   ├── __init__.py                   # 公共 API
 │   ├── pool.py                       # 主池类 (280行)
 │   ├── connection.py                 # 熔断器和连接 (250行)
@@ -49,7 +49,7 @@ pwutil/
 ### 1. 验证 Docker 环境
 
 ```bash
-cd /home/wsl/Code/pwutil/examples
+cd /home/wsl/Code/pagepool/examples
 ./verify_setup.sh
 ```
 
@@ -65,14 +65,14 @@ pip install playwright
 playwright install chromium
 
 # 或者安装整个包 (开发模式)
-cd /home/wsl/Code/pwutil
+cd /home/wsl/Code/pagepool
 pip install -e .
 ```
 
 ### 3. 运行测试
 
 ```bash
-cd /home/wsl/Code/pwutil/examples
+cd /home/wsl/Code/pagepool/examples
 
 # 运行完整测试套件 (7个测试)
 python3 test_pool.py
@@ -119,7 +119,7 @@ python3 basic_example.py
 ### 1. 基础使用
 
 ```python
-from pwutil import PlaywrightPagePool, PoolConfig
+from pagepool import PlaywrightPagePool, PoolConfig
 
 config = PoolConfig(cdp_endpoints=['http://localhost:9222'])
 
@@ -132,7 +132,7 @@ async with PlaywrightPagePool(config) as pool:
 ### 2. 负载均衡
 
 ```python
-from pwutil import round_robin_balancer
+from pagepool import round_robin_balancer
 
 config = PoolConfig(
     cdp_endpoints=[
@@ -220,7 +220,7 @@ curl http://localhost:8080/api/stats | python3 -m json.tool
 
 1. **运行测试**: 安装依赖后运行 `python3 test_pool.py`
 2. **修改配置**: 根据需求调整 `PoolConfig` 参数
-3. **集成到项目**: 将 pwutil 集成到你的爬虫项目
+3. **集成到项目**: 将 pagepool 集成到你的爬虫项目
 4. **生产部署**: 参考 docker-compose.yml 部署到生产环境
 
 ## 📚 文档
@@ -243,7 +243,7 @@ curl http://localhost:8080/api/stats | python3 -m json.tool
 
 ## 🎉 总结
 
-PWUtil Playwright Page Pool 已完全实现并部署:
+pagepool Playwright Page Pool 已完全实现并部署:
 
 ✅ **核心功能**: 8个核心模块, ~1200行代码
 ✅ **Docker 环境**: 2个 Chrome + 1个测试服务器

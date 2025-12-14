@@ -1,6 +1,6 @@
-# PWUtil Examples and Testing
+# pagepool Examples and Testing
 
-This directory contains examples and a complete testing environment for pwutil.
+This directory contains examples and a complete testing environment for pagepool.
 
 ## 🐳 Docker Environment
 
@@ -195,4 +195,4 @@ docker-compose down -v
 
 - Main README: `../README.md`
 - Plan file: `../.claude/plans/dynamic-wondering-spring.md`
-- Source code: `../pwutil/`
+- Source code: `../pagepool/`

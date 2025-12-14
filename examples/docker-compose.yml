@@ -12,7 +12,7 @@ services:
     shm_size: 2gb
     restart: unless-stopped
     networks:
-      - pwutil-network
+      - pagepool-network
 
   # Chrome instance 2
   chrome2:
@@ -27,7 +27,7 @@ services:
     shm_size: 2gb
     restart: unless-stopped
     networks:
-      - pwutil-network
+      - pagepool-network
 
   # Test web server
   test-web:
@@ -40,10 +40,10 @@ services:
       - PORT=8080
     restart: unless-stopped
     networks:
-      - pwutil-network
+      - pagepool-network
 
 networks:
-  pwutil-network:
+  pagepool-network:
     driver: bridge
 
 # Usage:

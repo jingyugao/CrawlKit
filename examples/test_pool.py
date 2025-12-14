@@ -1,14 +1,14 @@
-"""Comprehensive test script for pwutil page pool."""
+"""Comprehensive test script for pagepool page pool."""
 
 import asyncio
 import sys
 import time
 from pathlib import Path
 
-# Add parent directory to path to import pwutil
+# Add parent directory to path to import pagepool
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pwutil import (
+from pagepool import (
     PlaywrightPagePool,
     PoolConfig,
     round_robin_balancer,
@@ -172,11 +172,11 @@ async def test_ttl_management():
 
         # Acquire a page and check TTL
         page_wrapper = await pool.acquire_page()
-        print_success(f"Page TTL expired: {page_wrapper.is_ttl_expired()}")
+        print_success(f"Page TTL expired: {page_wrapper.is_ttl_expired(config.page_ttl)}")
 
         # Wait and check again
         await asyncio.sleep(6)
-        print_success(f"After 6s, Page TTL expired: {page_wrapper.is_ttl_expired()}")
+        print_success(f"After 6s, Page TTL expired: {page_wrapper.is_ttl_expired(config.page_ttl)}")
 
         await page_wrapper.release()
 

@@ -1,7 +1,8 @@
 """Context pool management with lifecycle and TTL support."""
 
+from __future__ import annotations
+
 import asyncio
-from typing import Optional, Set
 from datetime import datetime, timedelta
 from playwright.async_api import BrowserContext
 
@@ -63,7 +64,7 @@ class ContextWrapper:
         idle_time = (datetime.now() - self.last_used).total_seconds()
         return idle_time > timeout_seconds
 
-    def is_ttl_expired(self, ttl_seconds: Optional[float]) -> bool:
+    def is_ttl_expired(self, ttl_seconds: float | None) -> bool:
         """Check if context has exceeded its TTL.
 
         Args:
@@ -101,14 +102,14 @@ class ContextPool:
     """
 
     def __init__(self, browser_connection, config: PoolConfig):
-        from .connection import BrowserConnection
-        self.browser_connection: BrowserConnection = browser_connection
+        from .wrappers import BrowserWrapper
+        self.browser_connection: BrowserWrapper = browser_connection
         self.config = config
 
-        self._contexts: Set[ContextWrapper] = set()
+        self._contexts: set[ContextWrapper] = set()
         self._available_contexts: asyncio.Queue = asyncio.Queue()
         self._lock = asyncio.Lock()
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: asyncio.Task | None = None
 
     async def start(self):
         """Start background cleanup task."""
@@ -225,13 +226,15 @@ class ContextPool:
             ContextAcquireError: If creation fails.
         """
         try:
-            browser = await self.browser_connection.connect()
+            browser_wrapper = await self.browser_connection.connect()
+            if browser_wrapper.obj is None:
+                raise ContextAcquireError("Browser connection did not return an active browser")
 
             # Use custom context factory if provided
             if self.config.context_factory:
-                context = await self.config.context_factory(browser)
+                context = await self.config.context_factory(browser_wrapper.obj)
             else:
-                context = await browser.new_context()
+                context = await browser_wrapper.obj.new_context()
 
             # Wrap and track
             ctx_wrapper = ContextWrapper(context, datetime.now())
@@ -298,7 +301,7 @@ class ContextPool:
         """Check if this pool manages the given context."""
         return self._find_wrapper_for_context(context) is not None
 
-    def _find_wrapper_for_context(self, context: BrowserContext) -> Optional[ContextWrapper]:
+    def _find_wrapper_for_context(self, context: BrowserContext) -> ContextWrapper | None:
         """Return the wrapper associated with the context if present."""
         for wrapper in self._contexts:
             if wrapper.context == context:

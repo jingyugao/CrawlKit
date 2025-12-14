@@ -2,7 +2,7 @@
 
 import asyncio
 from typing import List, Dict, Any
-from pwutil import PlaywrightPagePool, PoolConfig
+from pagepool import PlaywrightPagePool, PoolConfig
 
 
 async def scrape_url(pool: PlaywrightPagePool, url: str) -> Dict[str, Any]:

@@ -2,7 +2,7 @@
 
 import asyncio
 import random
-from pwutil import PlaywrightPagePool, PoolConfig
+from pagepool import PlaywrightPagePool, PoolConfig
 
 
 # Simulated endpoint discovery (replace with real service discovery)

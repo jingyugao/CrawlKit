@@ -1,7 +1,7 @@
 """Basic example of using the Playwright page pool."""
 
 import asyncio
-from pwutil import PlaywrightPagePool, PoolConfig
+from pagepool import PlaywrightPagePool, PoolConfig
 
 
 async def main():

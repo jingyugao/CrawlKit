@@ -1,4 +1,4 @@
-"""Custom exceptions for pwutil package."""
+"""Custom exceptions for pagepool package."""
 
 
 class PoolException(Exception):

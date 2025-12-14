@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🔍 Verifying PWUtil Docker Environment"
+echo "🔍 Verifying pagepool Docker Environment"
 echo "======================================"
 echo ""
 

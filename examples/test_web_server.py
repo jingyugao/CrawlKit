@@ -1,4 +1,5 @@
-"""Simple test web server for pwutil testing."""
+"""Simple test web server for pagepool testing."""
+# pyright: reportMissingImports=false
 
 from flask import Flask, render_template_string, request, jsonify
 import time
@@ -76,7 +77,7 @@ HTML_TEMPLATE = """
                 <div class="stat-value">{{ response_time }}ms</div>
             </div>
         </div>
-        <p>This is a test page for pwutil crawler testing. Content changes on each request.</p>
+        <p>This is a test page for pagepool crawler testing. Content changes on each request.</p>
         <p>Random content: {{ random_content }}</p>
     </div>
 </body>

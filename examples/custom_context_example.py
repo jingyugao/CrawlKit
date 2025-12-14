@@ -2,7 +2,7 @@
 
 import asyncio
 from playwright.async_api import Browser, BrowserContext
-from pwutil import PlaywrightPagePool, PoolConfig, ConnectionStats, least_connections_balancer
+from pagepool import PlaywrightPagePool, PoolConfig, ConnectionStats, least_connections_balancer
 
 
 # Custom context factory for mobile scraping

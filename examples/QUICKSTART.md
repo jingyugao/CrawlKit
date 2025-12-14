@@ -12,9 +12,9 @@
 
 ```bash
 # Navigate to project root
-cd /home/wsl/Code/pwutil
+cd /home/wsl/Code/pagepool
 
-# Install pwutil package and dependencies
+# Install pagepool package and dependencies
 pip install -e .
 
 # Or install just playwright
@@ -110,11 +110,11 @@ docker-compose up -d --build
 
 ```bash
 # Install in development mode
-cd /home/wsl/Code/pwutil
+cd /home/wsl/Code/pagepool
 pip install -e .
 
 # Or set PYTHONPATH
-export PYTHONPATH=/home/wsl/Code/pwutil:$PYTHONPATH
+export PYTHONPATH=/home/wsl/Code/pagepool:$PYTHONPATH
 ```
 
 ### Playwright browser not found
@@ -155,7 +155,7 @@ After successful testing:
 
 1. Read the main README: `../README.md`
 2. Check the implementation plan: `../.claude/plans/dynamic-wondering-spring.md`
-3. Explore source code: `../pwutil/`
+3. Explore source code: `../pagepool/`
 4. Customize for your use case
 
 ## 🎯 Quick Test (Minimal)
@@ -164,7 +164,7 @@ If you just want to verify basic functionality:
 
 ```python
 import asyncio
-from pwutil import PlaywrightPagePool, PoolConfig
+from pagepool import PlaywrightPagePool, PoolConfig
 
 async def main():
     config = PoolConfig(cdp_endpoints=['http://localhost:9222'])

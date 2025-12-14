@@ -1,4 +1,4 @@
-# pwutil - Playwright Page Pool
+# pagepool - Playwright Page Pool
 
 High-performance Playwright page pool for web scraping with CDP protocol support.
 
@@ -37,7 +37,7 @@ playwright install chromium
 
 ```python
 import asyncio
-from pwutil import PlaywrightPagePool, PoolConfig
+from pagepool import PlaywrightPagePool, PoolConfig
 
 async def main():
     config = PoolConfig(
@@ -57,6 +57,30 @@ if __name__ == '__main__':
 ## Documentation
 
 See the `examples/` directory for more usage patterns.
+
+## How page acquisition works
+
+The pool manages resources by endpoint:
+
+- **Browser**: `BrowserWrapper` holds the CDP connection, stats, and health.
+- **Context**: `ContextWrapper` tracks active pages and TTL per context.
+- **Page**: `PageWrapper` carries the page plus its context wrapper and TTL metadata.
+
+When you call `acquire_page()` (or use `async with pool.page()`):
+
+1. **Try idle pages first**  
+   The pool pops from the endpoint’s idle `PageWrapper` queue, validates the page/context (not closed, not expired), increments counters, and returns it.
+
+2. **Reuse or create a context**  
+   If no idle page is usable, it selects a context that has spare page capacity. If none exists and under `max_contexts_per_connection`, it creates a new context.
+
+3. **Wait when saturated**  
+   If all contexts are at capacity, it waits up to `acquire_timeout` for an idle page to appear. Timeout raises `PageAcquireError`.
+
+4. **Create a new page**  
+   On a context with capacity, it creates a fresh page, wraps it, updates stats, and returns it.
+
+On release, the page is either returned to the idle queue for reuse or discarded if TTL/closure conditions apply. Optionally, `min_active_page` triggers background pre-warming of idle pages per endpoint.
 
 ## License
 

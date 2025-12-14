@@ -1,12 +1,14 @@
 """Configuration and statistics classes for the page pool."""
 
-from dataclasses import dataclass, field
-from typing import Optional, Callable, Any, Dict, Union, Awaitable
+from __future__ import annotations
+
+from typing import Callable, Any, Dict, Union, Awaitable
+
 from playwright.async_api import Browser, BrowserContext
+from pydantic import BaseModel, ConfigDict, Field
 
 
-@dataclass
-class PoolConfig:
+class PoolConfig(BaseModel):
     """Configuration for the Playwright page pool.
 
     Args:
@@ -34,12 +36,14 @@ class PoolConfig:
         half_open_max_calls: Number of successful calls needed to close circuit breaker.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # CDP endpoints (static or dynamic)
     cdp_endpoints: Union[
         list[str],
         Callable[[], list[str]],
         Callable[[], Awaitable[list[str]]]
-    ]
+    ] = Field(...)
 
     # Endpoint management
     endpoints_refresh_interval: float = 60.0
@@ -48,6 +52,7 @@ class PoolConfig:
     max_connections_per_endpoint: int = 5
     max_contexts_per_connection: int = 10
     max_pages_per_context: int = 5
+    min_active_page: int = 0
 
     # Timeouts
     connection_timeout: float = 30.0
@@ -55,18 +60,18 @@ class PoolConfig:
     idle_timeout: float = 300.0  # 5 minutes
 
     # TTL management
-    page_ttl: Optional[float] = None
-    context_ttl: Optional[float] = None
+    page_ttl: float | None = None
+    context_ttl: float | None = None
 
     # Health checking
     health_check_interval: float = 60.0
 
     # Customization
-    context_factory: Optional[Callable[[Browser], Awaitable[BrowserContext]]] = None
-    load_balancer: Optional[Callable[[Dict[str, 'ConnectionStats']], str]] = None
+    context_factory: Callable[[Browser], Awaitable[BrowserContext]] | None = None
+    load_balancer: Callable[[Dict[str, "ConnectionStats"]], str] | None = None
 
     # Connection parameters
-    cdp_headers: Optional[Dict[str, str]] = None
+    cdp_headers: Dict[str, str] | None = None
     slow_mo: float = 0.0
 
     # Behavior flags
@@ -74,30 +79,16 @@ class PoolConfig:
     auto_cleanup: bool = True
     strict_mode: bool = False
 
-    # Circuit breaker settings
+    # Circuit breaker settings (unused in current build, kept for compatibility)
     failure_threshold: int = 5
     recovery_timeout: float = 60.0
     half_open_max_calls: int = 3
 
 
-@dataclass
-class ConnectionStats:
-    """Statistics for a single CDP endpoint connection.
+class ConnectionStats(BaseModel):
+    """Statistics for a single CDP endpoint connection."""
 
-    Attributes:
-        endpoint: The CDP endpoint URL.
-        total_connections: Total number of connections made.
-        active_connections: Current number of active connections.
-        total_contexts: Total number of contexts created.
-        active_contexts: Current number of active contexts.
-        total_pages: Total number of pages created.
-        active_pages: Current number of active pages.
-        is_healthy: Whether the endpoint is currently healthy.
-        circuit_state: Current circuit breaker state (closed, open, half_open).
-        last_error: Last error message if any.
-        error_count: Total number of errors encountered.
-        success_count: Total number of successful operations.
-    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     endpoint: str
     total_connections: int = 0
@@ -108,7 +99,7 @@ class ConnectionStats:
     active_pages: int = 0
     is_healthy: bool = True
     circuit_state: str = "closed"
-    last_error: Optional[str] = None
+    last_error: str | None = None
     error_count: int = 0
     success_count: int = 0
 
@@ -123,7 +114,7 @@ class ConnectionStats:
             Load score (lower is better).
         """
         if not self.is_healthy or self.circuit_state == "open":
-            return float('inf')
+            return float("inf")
 
         # Score = active pages + (active contexts * weight)
         # This gives preference to endpoints with fewer pages
@@ -131,18 +122,6 @@ class ConnectionStats:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert stats to dictionary."""
-        return {
-            'endpoint': self.endpoint,
-            'total_connections': self.total_connections,
-            'active_connections': self.active_connections,
-            'total_contexts': self.total_contexts,
-            'active_contexts': self.active_contexts,
-            'total_pages': self.total_pages,
-            'active_pages': self.active_pages,
-            'is_healthy': self.is_healthy,
-            'circuit_state': self.circuit_state,
-            'last_error': self.last_error,
-            'error_count': self.error_count,
-            'success_count': self.success_count,
-            'load_score': self.load_score,
-        }
+        data = self.model_dump()
+        data["load_score"] = self.load_score
+        return data
