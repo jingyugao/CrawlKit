@@ -17,6 +17,17 @@ High-performance Playwright page pool for web scraping with CDP protocol support
 
 ## Installation
 
+Prefer using [uv](https://github.com/astral-sh/uv) for deterministic, Python 3.10+ compatible environments:
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip sync uv.lock
+uv run playwright install chromium
+```
+
+If you cannot use uv, you can fall back to pip:
+
 ```bash
 pip install -r requirements.txt
 playwright install chromium

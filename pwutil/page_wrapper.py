@@ -46,23 +46,17 @@ class PageWrapper:
         return age > self.pool.config.page_ttl
 
     async def release(self):
-        """Release the page back to the pool."""
+        """Close and release the page back to the pool."""
         async with self._lock:
             if self._released:
                 return
-
             self._released = True
-            await self.pool.release_page(self)
+
+        await self.pool.release_page(self, close_page=True)
 
     async def close(self):
-        """Close the page and release it."""
-        try:
-            if not self.page.is_closed():
-                await self.page.close()
-        except Exception:
-            pass  # Best effort cleanup
-        finally:
-            await self.release()
+        """Alias for release to keep API intuitive."""
+        await self.release()
 
     def __repr__(self) -> str:
         age = (datetime.now() - self.created_at).total_seconds()

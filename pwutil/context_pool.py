@@ -196,19 +196,17 @@ class ContextPool:
         Args:
             context: The BrowserContext to release.
         """
-        # Find the wrapper
-        ctx_wrapper = None
-        for wrapper in self._contexts:
-            if wrapper.context == context:
-                ctx_wrapper = wrapper
-                break
+        return await self.release_context_or_dispose(context, dispose=False)
 
+    async def release_context_or_dispose(self, context: BrowserContext, dispose: bool):
+        """Release a context or dispose it based on flag and TTL."""
+        ctx_wrapper = self._find_wrapper_for_context(context)
         if not ctx_wrapper:
             return  # Context not managed by this pool
 
         if self.config.reuse_contexts:
             # Check if TTL expired before reusing
-            if ctx_wrapper.is_ttl_expired(self.config.context_ttl):
+            if dispose or ctx_wrapper.is_ttl_expired(self.config.context_ttl):
                 await self._remove_context(ctx_wrapper)
             else:
                 await ctx_wrapper.release()
@@ -295,6 +293,17 @@ class ContextPool:
             # Update stats if any were removed
             if to_remove:
                 self.browser_connection.stats.active_contexts = len(self._contexts)
+
+    def owns_context(self, context: BrowserContext) -> bool:
+        """Check if this pool manages the given context."""
+        return self._find_wrapper_for_context(context) is not None
+
+    def _find_wrapper_for_context(self, context: BrowserContext) -> Optional[ContextWrapper]:
+        """Return the wrapper associated with the context if present."""
+        for wrapper in self._contexts:
+            if wrapper.context == context:
+                return wrapper
+        return None
 
     def __repr__(self) -> str:
         return f"<ContextPool contexts={len(self._contexts)} endpoint={self.browser_connection.endpoint}>"

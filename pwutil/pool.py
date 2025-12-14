@@ -1,16 +1,16 @@
 """Main page pool implementation for high-concurrency web scraping."""
 
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from contextlib import asynccontextmanager
-from playwright.async_api import async_playwright, Playwright
+from playwright.async_api import async_playwright, Playwright, BrowserContext
 
 from .config import PoolConfig, ConnectionStats
 from .connection import BrowserConnection
 from .context_pool import ContextPool
 from .page_wrapper import PageWrapper
 from .load_balancer import LoadBalancer
-from .exceptions import PageAcquireError
+from .exceptions import PageAcquireError, NoHealthyEndpointsError
 
 
 class PlaywrightPagePool:
@@ -178,7 +178,13 @@ class PlaywrightPagePool:
 
         # Select endpoint using load balancer
         stats = self.get_stats()
-        endpoint = self._load_balancer.select_endpoint(stats)
+        if not self._load_balancer:
+            raise PageAcquireError("Pool has no configured load balancer or endpoints")
+
+        try:
+            endpoint = self._load_balancer.select_endpoint(stats)
+        except NoHealthyEndpointsError as exc:
+            raise PageAcquireError("No healthy endpoints available") from exc
 
         # Get connection and context pool
         connection = self._connections[endpoint]
@@ -205,24 +211,33 @@ class PlaywrightPagePool:
             await context_pool.release_context(context)
             raise PageAcquireError(f"Failed to create page: {e}") from e
 
-    async def release_page(self, page_wrapper: PageWrapper):
+    async def release_page(self, page_wrapper: PageWrapper, *, close_page: bool = True):
         """Release a page back to the pool.
 
         Args:
             page_wrapper: The PageWrapper to release.
+            close_page: Whether to close the underlying page before releasing the context.
         """
-        # Close the page
-        await page_wrapper.close()
+        endpoint, context_pool = self._find_context_pool(page_wrapper.context)
+        if not context_pool:
+            return
 
-        # Find which endpoint this context belongs to
-        for endpoint, context_pool in self._context_pools.items():
-            connection = self._connections[endpoint]
+        connection = self._connections[endpoint]
 
-            # Check if context belongs to this pool
-            if page_wrapper.context in [w.context for w in context_pool._contexts]:
-                connection.stats.active_pages -= 1
-                await context_pool.release_context(page_wrapper.context)
-                break
+        if close_page and not page_wrapper.page.is_closed():
+            try:
+                await page_wrapper.page.close()
+            except Exception:
+                pass  # Best effort close
+
+        # Keep stats consistent even if release fails
+        connection.stats.active_pages = max(0, connection.stats.active_pages - 1)
+
+        dispose_context = page_wrapper.is_ttl_expired()
+        await context_pool.release_context_or_dispose(
+            page_wrapper.context,
+            dispose=dispose_context
+        )
 
     @asynccontextmanager
     async def page(self):
@@ -292,3 +307,11 @@ class PlaywrightPagePool:
 
     def __repr__(self) -> str:
         return f"<PlaywrightPagePool endpoints={len(self._connections)} started={self._started}>"
+
+    def _find_context_pool(self, context: BrowserContext) -> Tuple[Optional[str], Optional[ContextPool]]:
+        """Locate the context pool that owns the given context."""
+        for endpoint, context_pool in self._context_pools.items():
+            if context_pool.owns_context(context):
+                return endpoint, context_pool
+
+        return None, None
