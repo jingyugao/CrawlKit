@@ -84,6 +84,8 @@ On release, the page is either returned to the idle queue for reuse or discarded
 
 ### Flowchart (acquire_page)
 
+注：标有 `[I/O]` 的步骤会等待 I/O（CDP 调用或超时）；队列/计数操作为内存级。
+
 ```
 Start acquire_page
         |
@@ -96,17 +98,17 @@ Pop idle PageWrapper? -- yes --> Validate (not closed/expired)?
 Select Context with capacity?       Discard  Mark in-use, return page
         |          |
         |          v
-        |     Create Context (if under max)
+        |     Create Context (if under max) [I/O]
         |          |
         |          v
         +------> Context found?
                      |yes
                      v
-             Create new page -> wrap -> mark in-use -> return
+             Create new page [I/O] -> wrap -> mark in-use -> return
                      |
                      no
                      v
-            Wait for idle page until acquire_timeout
+            Wait for idle page until acquire_timeout [I/O wait]
                      |
            timeout -> PageAcquireError
 ```
