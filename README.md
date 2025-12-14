@@ -82,6 +82,35 @@ When you call `acquire_page()` (or use `async with pool.page()`):
 
 On release, the page is either returned to the idle queue for reuse or discarded if TTL/closure conditions apply. Optionally, `min_active_page` triggers background pre-warming of idle pages per endpoint.
 
+### Flowchart (acquire_page)
+
+```
+Start acquire_page
+        |
+        v
+Pop idle PageWrapper? -- yes --> Validate (not closed/expired)?
+        |                           |        |
+        no                          no       yes
+        |                           |        |
+        v                           v        v
+Select Context with capacity?       Discard  Mark in-use, return page
+        |          |
+        |          v
+        |     Create Context (if under max)
+        |          |
+        |          v
+        +------> Context found?
+                     |yes
+                     v
+             Create new page -> wrap -> mark in-use -> return
+                     |
+                     no
+                     v
+            Wait for idle page until acquire_timeout
+                     |
+           timeout -> PageAcquireError
+```
+
 ## License
 
 MIT
