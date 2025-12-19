@@ -170,25 +170,8 @@ class ContextPool:
         async with self._lock:
             return await self._create_new_context()
 
-        # Wait for an available context (with timeout)
-        try:
-            ctx_wrapper = await asyncio.wait_for(
-                self._available_contexts.get(),
-                timeout=self.config.acquire_timeout
-            )
-
-            # Check TTL before returning
-            if ctx_wrapper.is_ttl_expired(self.config.context_ttl):
-                await self._remove_context(ctx_wrapper)
-                # Recursively try again
-                return await self.acquire_context()
-
-            return await ctx_wrapper.acquire()
-
-        except asyncio.TimeoutError:
-            raise ContextAcquireError(
-                f"Timeout acquiring context after {self.config.acquire_timeout}s"
-            )
+        # Wait not allowed; fail fast
+        raise ContextAcquireError("No context available and waiting is disabled")
 
     async def release_context(self, context: BrowserContext):
         """Release a context back to the pool.
@@ -231,7 +214,13 @@ class ContextPool:
 
             # Use custom context factory if provided
             if self.config.context_factory:
-                context = await self.config.context_factory(browser_wrapper.obj)
+                factory = self.config.context_factory
+                if isinstance(factory, dict):
+                    factory = factory.get("default") or next(iter(factory.values()), None)
+                if factory:
+                    context = await factory(browser_wrapper.obj)
+                else:
+                    context = await browser_wrapper.obj.new_context()
             else:
                 context = await browser_wrapper.obj.new_context()
 

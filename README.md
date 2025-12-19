@@ -74,10 +74,7 @@ When you call `acquire_page()` (or use `async with pool.page()`):
 2. **Reuse or create a context**  
    If no idle page is usable, it selects a context that has spare page capacity; otherwise it creates a new context.
 
-3. **Wait when saturated**  
-   If all contexts are at capacity, it waits up to `acquire_timeout` for an idle page to appear. Timeout raises `PageAcquireError`.
-
-4. **Create a new page**  
+3. **Create a new page**  
    On a context with capacity, it creates a fresh page, wraps it, updates stats, and returns it.
 
 On release, the page is either returned to the idle queue for reuse or discarded if TTL/closure conditions apply. Optionally, `min_active_page` triggers background pre-warming of idle pages per endpoint.
@@ -104,13 +101,11 @@ Select Context with capacity?       Discard  Mark in-use, return page
         +------> Context found?
                      |yes
                      v
-             Create new page [I/O] -> wrap -> mark in-use -> return
+            Create new page [I/O] -> wrap -> mark in-use -> return
                      |
                      no
                      v
-            Wait for idle page until acquire_timeout [I/O wait]
-                     |
-           timeout -> PageAcquireError
+            No capacity -> PageAcquireError
 ```
 
 ## License

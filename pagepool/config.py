@@ -16,11 +16,10 @@ class PoolConfig(BaseModel):
                       Supports static list, sync function, or async function.
         max_pages_per_context: Maximum pages per context (soft cap).
         connection_timeout: Timeout for establishing CDP connection (seconds).
-        acquire_timeout: Timeout for acquiring a resource from pool (seconds).
         idle_timeout: How long a context can be idle before cleanup (seconds).
         context_ttl: Maximum lifetime of a context (seconds). None means no limit.
         health_check_interval: How often to run health checks (seconds).
-        context_factory: Optional custom function to create browser contexts.
+        context_factory: Optional custom function (or mapping of scene -> function) to create browser contexts.
         load_balancer: Optional custom function to select endpoints for load balancing.
         cdp_connect_opts: Extra kwargs passed to Playwright chromium.connect_over_cdp (headers, slow_mo, timeout, etc.).
         reuse_contexts: Whether to reuse contexts across page acquisitions.
@@ -41,7 +40,6 @@ class PoolConfig(BaseModel):
 
     # Timeouts
     connection_timeout: float = 30.0
-    acquire_timeout: float = 0.0  # 0 disables waiting; returns error when saturated
     idle_timeout: float = 300.0  # 5 minutes
 
     # TTL management
@@ -51,7 +49,7 @@ class PoolConfig(BaseModel):
     health_check_interval: float = 60.0
 
     # Customization
-    context_factory: Callable[[Browser], Awaitable[BrowserContext]] | None = None
+    context_factory: Callable[[Browser], Awaitable[BrowserContext]] | Dict[str, Callable[[Browser], Awaitable[BrowserContext]]] | None = None
     load_balancer: Callable[[Dict[str, "ConnectionStats"]], str] | None = None
 
     # Connection parameters

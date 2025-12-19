@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Dict, Tuple, cast
+from typing import Dict, Tuple, cast, Callable, Awaitable
 from contextlib import asynccontextmanager
 from playwright.async_api import (
     async_playwright,
     Playwright,
+    Browser,
     BrowserContext,
     Page,
 )
@@ -111,7 +112,7 @@ class PlaywrightPagePool:
             self.config.load_balancer
         )
 
-    async def acquire_page(self) -> PageWrapper:
+    async def acquire_page(self, scene: str | None = None) -> PageWrapper:
         """Acquire a page from the pool.
 
         This method:
@@ -146,7 +147,7 @@ class PlaywrightPagePool:
         connection = self._connections[endpoint]
 
         try:
-            page_wrapper = await self._acquire_page_for_endpoint(endpoint, connection)
+            page_wrapper = await self._acquire_page_for_endpoint(endpoint, connection, scene)
             page_wrapper._releaser = self.release_page
             self._schedule_spawn_pages(endpoint)
             return page_wrapper
@@ -236,6 +237,7 @@ class PlaywrightPagePool:
         self,
         endpoint: str,
         connection: BrowserWrapper,
+        scene: str | None = None,
     ) -> PageWrapper:
         """Get a page for the given endpoint, reusing existing pages when possible."""
         idle_queue = self._idle_pages[endpoint]
@@ -249,7 +251,7 @@ class PlaywrightPagePool:
         # 2) Pick or create a context with capacity (respect caps)
         context_with_capacity = self._select_context_with_capacity(contexts)
         if not context_with_capacity and self._can_create_more_pages(endpoint):
-            context_with_capacity = await self._create_context(endpoint, connection)
+            context_with_capacity = await self._create_context(endpoint, connection, scene)
 
         # 3) If still no context, fail fast (no waiting when disabled)
         if context_with_capacity is None:
@@ -341,7 +343,10 @@ class PlaywrightPagePool:
     def _select_context_with_capacity(self, contexts: list[ContextWrapper]) -> ContextWrapper | None:
         """Pick the first context with remaining page capacity."""
         for record in contexts:
-            if not record.ttl_expired(self.config.context_ttl) and record.active_pages < self.config.max_pages_per_context:
+            if not record.ttl_expired(self.config.context_ttl) and (
+                self.config.max_pages_per_context == 0
+                or record.active_pages < self.config.max_pages_per_context
+            ):
                 return record
         return None
 
@@ -360,13 +365,14 @@ class PlaywrightPagePool:
 
         return True
 
-    async def _create_context(self, endpoint: str, connection: BrowserWrapper) -> ContextWrapper:
+    async def _create_context(self, endpoint: str, connection: BrowserWrapper, scene: str | None = None) -> ContextWrapper:
         """Create and register a new context for an endpoint."""
         browser_wrapper = await connection.connect()
         if browser_wrapper.obj is None:
             raise PageAcquireError("Browser connection did not return an active browser")
-        if self.config.context_factory:
-            context = await self.config.context_factory(browser_wrapper.obj)
+        context_factory = self._resolve_context_factory(scene)
+        if context_factory:
+            context = await context_factory(browser_wrapper.obj)
         else:
             context = await browser_wrapper.obj.new_context()
 
@@ -376,6 +382,17 @@ class PlaywrightPagePool:
         connection.stats.total_contexts += 1
         connection.stats.active_contexts = len(self._endpoint_contexts[endpoint])
         return record
+
+    def _resolve_context_factory(self, scene: str | None) -> Callable[[Browser], Awaitable[BrowserContext]] | None:
+        """Select context factory by scene if mapping is provided."""
+        factory = self.config.context_factory
+        if factory is None:
+            return None
+        if isinstance(factory, dict):
+            if scene is None:
+                return factory.get("default") or next(iter(factory.values()), None)
+            return factory.get(scene)
+        return factory
 
     async def _spawn_idle_page(self, endpoint: str):
         """Create a page and return it to the idle queue without counting as active."""
