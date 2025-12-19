@@ -8,7 +8,7 @@ High-performance Playwright page pool for web scraping with CDP protocol support
 - **Dynamic Endpoint Management**: Support for Chrome cluster auto-scaling (Kubernetes, service discovery)
 - **Flexible Load Balancing**: User-defined load balancing strategies
 - **Custom Contexts**: User-defined context factory for different scenarios
-- **TTL Management**: Control page and context lifetime (page_ttl, context_ttl)
+- **TTL Management**: Control context lifetime (context_ttl)
 - **Robust Error Handling**: Circuit breaker, retry logic, graceful degradation
 - **Resource Efficient**: Connection/context reuse, idle cleanup, TTL auto-cleanup
 - **Easy to Use**: Context manager support, simple API
@@ -72,7 +72,7 @@ When you call `acquire_page()` (or use `async with pool.page()`):
    The pool pops from the endpoint’s idle `PageWrapper` queue, validates the page/context (not closed, not expired), increments counters, and returns it.
 
 2. **Reuse or create a context**  
-   If no idle page is usable, it selects a context that has spare page capacity. If none exists and under `max_contexts_per_connection`, it creates a new context.
+   If no idle page is usable, it selects a context that has spare page capacity; otherwise it creates a new context.
 
 3. **Wait when saturated**  
    If all contexts are at capacity, it waits up to `acquire_timeout` for an idle page to appear. Timeout raises `PageAcquireError`.

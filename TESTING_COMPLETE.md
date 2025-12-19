@@ -148,7 +148,6 @@ config = PoolConfig(
 ```python
 config = PoolConfig(
     cdp_endpoints=['http://localhost:9222'],
-    page_ttl=300.0,      # 5分钟
     context_ttl=1800.0,  # 30分钟
 )
 ```
@@ -161,7 +160,6 @@ def get_endpoints():
 
 config = PoolConfig(
     cdp_endpoints=get_endpoints,  # 函数!
-    endpoints_refresh_interval=30.0
 )
 ```
 

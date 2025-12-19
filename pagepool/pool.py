@@ -46,7 +46,6 @@ class PlaywrightPagePool:
         self._load_balancer: LoadBalancer | None = None
 
         self._started = False
-        self._endpoints_refresh_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
     async def start(self):
@@ -61,12 +60,6 @@ class PlaywrightPagePool:
             # Initialize endpoint list
             await self._refresh_endpoints()
 
-            # Start endpoint refresh task (if cdp_endpoints is a function)
-            if callable(self.config.cdp_endpoints):
-                self._endpoints_refresh_task = asyncio.create_task(
-                    self._endpoints_refresh_loop()
-                )
-
             self._started = True
 
     async def stop(self):
@@ -74,14 +67,6 @@ class PlaywrightPagePool:
         async with self._lock:
             if not self._started:
                 return
-
-            # Stop endpoints refresh task
-            if self._endpoints_refresh_task:
-                self._endpoints_refresh_task.cancel()
-                try:
-                    await self._endpoints_refresh_task
-                except asyncio.CancelledError:
-                    pass
 
             # Cleanup endpoint resources
             for endpoint in list(self._connections.keys()):
@@ -126,17 +111,6 @@ class PlaywrightPagePool:
             self.config.load_balancer
         )
 
-    async def _endpoints_refresh_loop(self):
-        """Background task to periodically refresh endpoint list."""
-        while True:
-            try:
-                await asyncio.sleep(self.config.endpoints_refresh_interval)
-                await self._refresh_endpoints()
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                pass  # Continue refresh loop
-
     async def acquire_page(self) -> PageWrapper:
         """Acquire a page from the pool.
 
@@ -154,6 +128,9 @@ class PlaywrightPagePool:
         """
         if not self._started:
             await self.start()
+
+        # Refresh endpoints every acquire to reflect dynamic sources
+        await self._refresh_endpoints()
 
         # Select endpoint using load balancer
         stats = self.get_stats()
@@ -269,29 +246,19 @@ class PlaywrightPagePool:
         if page_wrapper:
             return page_wrapper
 
-        # 2) Pick or create a context with capacity
+        # 2) Pick or create a context with capacity (respect caps)
         context_with_capacity = self._select_context_with_capacity(contexts)
-        if not context_with_capacity and len(contexts) < self.config.max_contexts_per_connection:
+        if not context_with_capacity and self._can_create_more_pages(endpoint):
             context_with_capacity = await self._create_context(endpoint, connection)
 
-        # 3) If still no context, wait for an idle page to show up
+        # 3) If still no context, fail fast (no waiting when disabled)
         if context_with_capacity is None:
-            try:
-                page_wrapper = await asyncio.wait_for(
-                    idle_queue.get(),
-                    timeout=self.config.acquire_timeout,
-                )
-            except asyncio.TimeoutError as e:
-                raise PageAcquireError(
-                    f"Timeout acquiring page after {self.config.acquire_timeout}s"
-                ) from e
-
-            activated = await self._activate_idle_page(page_wrapper, endpoint, connection)
-            if activated is None:
-                return await self._acquire_page_for_endpoint(endpoint, connection)
-            return activated
+            raise PageAcquireError("No context available and acquire wait disabled")
 
         # 4) Create a new page on the selected context
+        if not self._can_create_more_pages(endpoint):
+            raise PageAcquireError("Page cap reached; cannot allocate more pages")
+
         try:
             page = await context_with_capacity.obj.new_page()
         except Exception as e:  # noqa: BLE001
@@ -361,9 +328,7 @@ class PlaywrightPagePool:
 
         # Discard closed or expired pages
         context_expired = ctx_wrapper.ttl_expired(self.config.context_ttl)
-        page_expired = page_wrapper.is_ttl_expired(self.config.page_ttl)
-
-        if page_wrapper.obj.is_closed() or page_expired or context_expired:
+        if page_wrapper.obj.is_closed() or context_expired:
             await self._discard_page(page_wrapper.obj)
             if context_expired and ctx_wrapper.active_pages == 0:
                 await self._discard_context(ctx_wrapper, endpoint)
@@ -379,6 +344,21 @@ class PlaywrightPagePool:
             if not record.ttl_expired(self.config.context_ttl) and record.active_pages < self.config.max_pages_per_context:
                 return record
         return None
+
+    def _can_create_more_pages(self, endpoint: str) -> bool:
+        """Check against global and idle page caps."""
+        total_pages = sum(
+            connection.stats.active_pages + connection.stats.total_pages
+            for connection in self._connections.values()
+        )
+        if self.config.max_total_pages and total_pages >= self.config.max_total_pages:
+            return False
+
+        idle_queue = self._idle_pages.get(endpoint)
+        if self.config.max_idle_pages and idle_queue and idle_queue.qsize() >= self.config.max_idle_pages:
+            return False
+
+        return True
 
     async def _create_context(self, endpoint: str, connection: BrowserWrapper) -> ContextWrapper:
         """Create and register a new context for an endpoint."""
@@ -407,7 +387,7 @@ class PlaywrightPagePool:
 
         context_with_capacity = self._select_context_with_capacity(contexts)
         if not context_with_capacity:
-            if len(contexts) >= self.config.max_contexts_per_connection:
+            if not self._can_create_more_pages(endpoint):
                 return
             try:
                 context_with_capacity = await self._create_context(endpoint, connection)

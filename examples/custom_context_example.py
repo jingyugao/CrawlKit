@@ -63,7 +63,6 @@ async def mobile_scraping_example():
     config = PoolConfig(
         cdp_endpoints=['http://localhost:9222'],
         context_factory=mobile_context_factory,
-        max_contexts_per_connection=5,
     )
 
     async with PlaywrightPagePool(config) as pool:
@@ -85,7 +84,6 @@ async def desktop_scraping_example():
     config = PoolConfig(
         cdp_endpoints=['http://localhost:9222'],
         context_factory=desktop_stealth_context_factory,
-        max_contexts_per_connection=5,
     )
 
     async with PlaywrightPagePool(config) as pool:

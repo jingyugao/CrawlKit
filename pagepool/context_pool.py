@@ -168,8 +168,7 @@ class ContextPool:
 
         # Create new context if under limit
         async with self._lock:
-            if len(self._contexts) < self.config.max_contexts_per_connection:
-                return await self._create_new_context()
+            return await self._create_new_context()
 
         # Wait for an available context (with timeout)
         try:

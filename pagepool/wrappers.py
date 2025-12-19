@@ -48,8 +48,7 @@ class BrowserWrapper:
                 browser = await self.playwright.chromium.connect_over_cdp(
                     self.endpoint,
                     timeout=self.config.connection_timeout * 1000,
-                    headers=self.config.cdp_headers,
-                    slow_mo=self.config.slow_mo,
+                    **self.config.cdp_connect_opts,
                 )
                 self.obj = browser
                 self.created_at = datetime.now()

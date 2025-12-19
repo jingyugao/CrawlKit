@@ -52,9 +52,6 @@ async def main():
     # Configure pool with dynamic endpoints
     config = PoolConfig(
         cdp_endpoints=discovery.get_endpoints,  # Pass function, not list!
-        endpoints_refresh_interval=10.0,  # Refresh every 10 seconds
-        max_connections_per_endpoint=2,
-        max_contexts_per_connection=5,
     )
 
     async with PlaywrightPagePool(config) as pool:
@@ -111,7 +108,6 @@ async def main_with_async_discovery():
 
     config = PoolConfig(
         cdp_endpoints=get_endpoints_from_k8s,  # Async function
-        endpoints_refresh_interval=30.0,
     )
 
     async with PlaywrightPagePool(config) as pool:

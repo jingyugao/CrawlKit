@@ -166,8 +166,6 @@ docker-compose down -v
 1. **Adjust pool size** based on Chrome instance capacity:
    ```python
    config = PoolConfig(
-       max_connections_per_endpoint=5,
-       max_contexts_per_connection=10,
    )
    ```
 

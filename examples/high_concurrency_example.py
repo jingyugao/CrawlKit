@@ -45,12 +45,10 @@ async def main():
             'http://localhost:9223',
             'http://localhost:9224',
         ],
-        max_connections_per_endpoint=3,
-        max_contexts_per_connection=15,
         reuse_contexts=True,
         auto_cleanup=True,
         # TTL settings
-        page_ttl=300.0,      # 5 minutes
+        # page_ttl removed 300.0,      # 5 minutes
         context_ttl=1800.0,  # 30 minutes
         idle_timeout=600.0,  # 10 minutes
     )

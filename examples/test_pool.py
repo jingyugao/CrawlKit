@@ -121,8 +121,6 @@ async def test_high_concurrency():
             'http://localhost:9222',
             'http://localhost:9223',
         ],
-        max_connections_per_endpoint=2,
-        max_contexts_per_connection=5,
         reuse_contexts=True,
         load_balancer=least_connections_balancer,
     )
@@ -161,7 +159,7 @@ async def test_ttl_management():
 
     config = PoolConfig(
         cdp_endpoints=['http://localhost:9222'],
-        page_ttl=5.0,       # 5 seconds
+        # page_ttl removed 5.0,       # 5 seconds
         context_ttl=15.0,   # 15 seconds
         idle_timeout=10.0,  # 10 seconds
         reuse_contexts=True,
@@ -172,11 +170,11 @@ async def test_ttl_management():
 
         # Acquire a page and check TTL
         page_wrapper = await pool.acquire_page()
-        print_success(f"Page TTL expired: {page_wrapper.is_ttl_expired(config.page_ttl)}")
+        print_success(f"Page TTL expired: {page_wrapper.is_ttl_expired(None)}")
 
         # Wait and check again
         await asyncio.sleep(6)
-        print_success(f"After 6s, Page TTL expired: {page_wrapper.is_ttl_expired(config.page_ttl)}")
+        print_success(f"After 6s, Page TTL expired: {page_wrapper.is_ttl_expired(None)}")
 
         await page_wrapper.release()
 
@@ -209,7 +207,6 @@ async def test_dynamic_endpoints():
 
     config = PoolConfig(
         cdp_endpoints=discovery.get_endpoints,
-        endpoints_refresh_interval=3.0,  # Refresh every 3 seconds
     )
 
     async with PlaywrightPagePool(config) as pool:
@@ -287,8 +284,6 @@ async def test_error_handling():
             'http://localhost:9222',
             'http://invalid:9999',  # Invalid endpoint
         ],
-        failure_threshold=3,
-        recovery_timeout=5.0,
     )
 
     async with PlaywrightPagePool(config) as pool:

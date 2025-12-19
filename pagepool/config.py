@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Any, Dict, Union, Awaitable
+from typing import Callable, Any, Dict, Awaitable
 
 from playwright.async_api import Browser, BrowserContext
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,53 +14,37 @@ class PoolConfig(BaseModel):
     Args:
         cdp_endpoints: List of CDP endpoint URLs, or a function that returns the list.
                       Supports static list, sync function, or async function.
-        endpoints_refresh_interval: How often to refresh endpoints (seconds) when using dynamic endpoints.
-        max_connections_per_endpoint: Maximum browser connections per endpoint.
-        max_contexts_per_connection: Maximum contexts per browser connection.
-        max_pages_per_context: Maximum pages per context (currently not enforced strictly).
+        max_pages_per_context: Maximum pages per context (soft cap).
         connection_timeout: Timeout for establishing CDP connection (seconds).
         acquire_timeout: Timeout for acquiring a resource from pool (seconds).
         idle_timeout: How long a context can be idle before cleanup (seconds).
-        page_ttl: Maximum lifetime of a page (seconds). None means no limit.
         context_ttl: Maximum lifetime of a context (seconds). None means no limit.
         health_check_interval: How often to run health checks (seconds).
         context_factory: Optional custom function to create browser contexts.
         load_balancer: Optional custom function to select endpoints for load balancing.
-        cdp_headers: Optional HTTP headers to send with CDP connection.
-        slow_mo: Slow down Playwright operations by this amount (milliseconds).
+        cdp_connect_opts: Extra kwargs passed to Playwright chromium.connect_over_cdp (headers, slow_mo, timeout, etc.).
         reuse_contexts: Whether to reuse contexts across page acquisitions.
         auto_cleanup: Whether to automatically cleanup idle resources.
         strict_mode: If True, raise errors on connection failures. If False, retry/continue.
-        failure_threshold: Number of failures before opening circuit breaker.
-        recovery_timeout: Time to wait before trying to close circuit breaker (seconds).
-        half_open_max_calls: Number of successful calls needed to close circuit breaker.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # CDP endpoints (static or dynamic)
-    cdp_endpoints: Union[
-        list[str],
-        Callable[[], list[str]],
-        Callable[[], Awaitable[list[str]]]
-    ] = Field(...)
-
-    # Endpoint management
-    endpoints_refresh_interval: float = 60.0
+    cdp_endpoints: list[str] | Callable[[], list[str]] | Callable[[], Awaitable[list[str]]] = Field(...)
 
     # Pool sizing
-    max_connections_per_endpoint: int = 5
-    max_contexts_per_connection: int = 10
-    max_pages_per_context: int = 5
+    max_pages_per_context: int = 0  # 0 means no cap
+    max_total_pages: int = 0  # 0 means no cap
+    max_idle_pages: int = 0  # 0 means no cap
     min_active_page: int = 0
 
     # Timeouts
     connection_timeout: float = 30.0
-    acquire_timeout: float = 10.0
+    acquire_timeout: float = 0.0  # 0 disables waiting; returns error when saturated
     idle_timeout: float = 300.0  # 5 minutes
 
     # TTL management
-    page_ttl: float | None = None
     context_ttl: float | None = None
 
     # Health checking
@@ -71,18 +55,12 @@ class PoolConfig(BaseModel):
     load_balancer: Callable[[Dict[str, "ConnectionStats"]], str] | None = None
 
     # Connection parameters
-    cdp_headers: Dict[str, str] | None = None
-    slow_mo: float = 0.0
+    cdp_connect_opts: Dict[str, Any] = Field(default_factory=dict)
 
     # Behavior flags
     reuse_contexts: bool = True
     auto_cleanup: bool = True
     strict_mode: bool = False
-
-    # Circuit breaker settings (unused in current build, kept for compatibility)
-    failure_threshold: int = 5
-    recovery_timeout: float = 60.0
-    half_open_max_calls: int = 3
 
 
 class ConnectionStats(BaseModel):
