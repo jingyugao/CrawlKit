@@ -6,13 +6,14 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/mychrome ./main.go
 
 FROM ubuntu:22.04
-RUN apt update && apt install -y wget socat && \
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends wget socat ca-certificates && \
     wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
     dpkg -i google-chrome-stable_current_amd64.deb || true && \
-    apt -f -y install && \
+    apt-get -o Acquire::Retries=3 -y -f install --fix-missing && \
     dpkg -i google-chrome-stable_current_amd64.deb && \
     rm google-chrome-stable_current_amd64.deb && \
-    apt clean && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 COPY start.sh /start.sh
