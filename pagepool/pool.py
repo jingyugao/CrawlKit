@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+import logging
 from datetime import datetime
 from typing import Dict, Tuple, cast, Callable, Awaitable
 from contextlib import asynccontextmanager
@@ -45,6 +46,7 @@ class PlaywrightPagePool:
         self._endpoint_contexts: Dict[str, list[ContextWrapper]] = {}
         self._idle_pages: Dict[str, asyncio.Queue[PageWrapper]] = {}
         self._load_balancer: LoadBalancer | None = None
+        self._draining_endpoints: set[str] = set()
 
         self._started = False
         self._lock = asyncio.Lock()
@@ -95,6 +97,7 @@ class PlaywrightPagePool:
                 playwright=self._playwright,
                 config=self.config,
                 stats=ConnectionStats(endpoint=endpoint),
+                on_disconnect=self._handle_endpoint_disconnect,
             )
             self._connections[endpoint] = wrapper
             self._endpoint_contexts[endpoint] = []
@@ -104,7 +107,15 @@ class PlaywrightPagePool:
         # Remove deleted endpoints
         removed_endpoints = existing_endpoints_set - current_endpoints_set
         for endpoint in removed_endpoints:
-            await self._cleanup_endpoint(endpoint)
+            await self._drain_or_cleanup_endpoint(endpoint)
+
+        # Clear draining flag for endpoints that reappear
+        for endpoint in current_endpoints_set & self._draining_endpoints:
+            self._draining_endpoints.discard(endpoint)
+            connection = self._connections.get(endpoint)
+            if connection:
+                connection.stats.circuit_state = "closed"
+                connection.stats.is_healthy = True
 
         # Update load balancer with current endpoints
         self._load_balancer = LoadBalancer(
@@ -133,26 +144,49 @@ class PlaywrightPagePool:
         # Refresh endpoints every acquire to reflect dynamic sources
         await self._refresh_endpoints()
 
-        # Select endpoint using load balancer
-        stats = self.get_stats()
+        # Select endpoint using load balancer, retrying other endpoints if one closes mid-acquire.
+        stats = {
+            endpoint: stat
+            for endpoint, stat in self.get_stats().items()
+            if endpoint not in self._draining_endpoints
+        }
         if not self._load_balancer:
             raise PageAcquireError("Pool has no configured load balancer or endpoints")
 
-        try:
-            endpoint = self._load_balancer.select_endpoint(stats)
-        except NoHealthyEndpointsError as exc:
-            raise PageAcquireError("No healthy endpoints available") from exc
+        last_error: Exception | None = None
+        attempts = max(1, len(stats))
+        for _ in range(attempts):
+            if not stats:
+                break
+            try:
+                endpoint = self._load_balancer.select_endpoint(stats)
+            except NoHealthyEndpointsError as exc:
+                raise PageAcquireError("No healthy endpoints available") from exc
 
-        # Get connection for endpoint
-        connection = self._connections[endpoint]
+            connection = self._connections[endpoint]
+            try:
+                page_wrapper = await self._acquire_page_for_endpoint(endpoint, connection, scene)
+                page_wrapper._releaser = self.release_page
+                self._schedule_spawn_pages(endpoint)
+                return page_wrapper
+            except PageAcquireError as exc:
+                last_error = exc
+                logging.warning("acquire failed on %s: %s", endpoint, exc)
+                connection.stats.is_healthy = False
+                connection.stats.circuit_state = "open"
+                stats.pop(endpoint, None)
+                continue
+            except Exception as exc:
+                last_error = exc
+                logging.warning("acquire unexpected error on %s: %s", endpoint, exc)
+                connection.stats.is_healthy = False
+                connection.stats.circuit_state = "open"
+                stats.pop(endpoint, None)
+                continue
 
-        try:
-            page_wrapper = await self._acquire_page_for_endpoint(endpoint, connection, scene)
-            page_wrapper._releaser = self.release_page
-            self._schedule_spawn_pages(endpoint)
-            return page_wrapper
-        except Exception as e:
-            raise PageAcquireError(f"Failed to acquire page: {e}") from e
+        if last_error:
+            raise PageAcquireError(f"Failed to acquire page: {last_error}") from last_error
+        raise PageAcquireError("Failed to acquire page: no available endpoints")
 
     async def release_page(self, page_wrapper: PageWrapper):
         """Release a page back to the pool.
@@ -336,6 +370,13 @@ class PlaywrightPagePool:
                 await self._discard_context(ctx_wrapper, endpoint)
             return
 
+        # If endpoint is draining, discard and finalize cleanup when empty
+        if endpoint in self._draining_endpoints:
+            await self._discard_page(page_wrapper.obj)
+            if connection.stats.active_pages == 0:
+                await self._cleanup_endpoint(endpoint)
+            return
+
         # Reuse page by returning to idle queue
         await self._idle_pages[endpoint].put(page_wrapper)
         self._schedule_spawn_pages(endpoint)
@@ -352,6 +393,8 @@ class PlaywrightPagePool:
 
     def _can_create_more_pages(self, endpoint: str) -> bool:
         """Check against global and idle page caps."""
+        if endpoint in self._draining_endpoints:
+            return False
         total_pages = sum(
             connection.stats.active_pages + connection.stats.total_pages
             for connection in self._connections.values()
@@ -398,6 +441,8 @@ class PlaywrightPagePool:
         """Create a page and return it to the idle queue without counting as active."""
         if self.config.min_active_page <= 0:
             return
+        if endpoint in self._draining_endpoints:
+            return
 
         connection = self._connections[endpoint]
         contexts = self._endpoint_contexts[endpoint]
@@ -431,6 +476,8 @@ class PlaywrightPagePool:
     def _schedule_spawn_pages(self, endpoint: str):
         """Schedule background creation of idle pages to meet min_active_page."""
         if self.config.min_active_page <= 0:
+            return
+        if endpoint in self._draining_endpoints:
             return
         idle_queue = self._idle_pages.get(endpoint)
         if idle_queue is None:
@@ -491,6 +538,7 @@ class PlaywrightPagePool:
 
     async def _cleanup_endpoint(self, endpoint: str):
         """Close all contexts and disconnect connection for an endpoint."""
+        logging.info("endpoint cleanup: %s", endpoint)
         contexts = self._endpoint_contexts.get(endpoint, [])
         for record in list(contexts):
             await self._discard_context(record, endpoint)
@@ -508,3 +556,46 @@ class PlaywrightPagePool:
         connection = self._connections.pop(endpoint, None)
         if connection:
             await connection.disconnect()
+        self._draining_endpoints.discard(endpoint)
+
+    async def _handle_endpoint_disconnect(self, endpoint: str) -> None:
+        """Mark endpoint unhealthy and clear cached contexts/pages on disconnect."""
+        connection = self._connections.get(endpoint)
+        if not connection:
+            return
+        logging.warning("endpoint disconnected: %s", endpoint)
+        connection.stats.is_healthy = False
+        connection.stats.circuit_state = "open"
+        connection.stats.last_error = "cdp disconnected"
+        connection.stats.active_connections = 0
+        connection.stats.active_pages = 0
+
+        contexts = self._endpoint_contexts.get(endpoint, [])
+        for record in list(contexts):
+            await self._discard_context(record, endpoint)
+
+        idle_queue = self._idle_pages.get(endpoint)
+        if idle_queue:
+            while not idle_queue.empty():
+                try:
+                    wrapper = idle_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                await self._discard_page(wrapper.obj)
+
+    async def _drain_or_cleanup_endpoint(self, endpoint: str) -> None:
+        connection = self._connections.get(endpoint)
+        if not connection:
+            return
+        if connection.stats.active_pages > 0:
+            self._draining_endpoints.add(endpoint)
+            logging.info(
+                "endpoint draining: %s (active_pages=%d)",
+                endpoint,
+                connection.stats.active_pages,
+            )
+            connection.stats.is_healthy = False
+            connection.stats.circuit_state = "open"
+            connection.stats.last_error = "draining"
+            return
+        await self._cleanup_endpoint(endpoint)

@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: playwright-demo
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: playwright-demo
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: playwright-demo
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: playwright-demo
+subjects:
+  - kind: ServiceAccount
+    name: playwright-demo
+    namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: playwright-demo
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: playwright-demo
+  template:
+    metadata:
+      labels:
+        app: playwright-demo
+    spec:
+      serviceAccountName: playwright-demo
+      containers:
+        - name: demo
+          image: playwright-demo:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - python
+            - -u
+            - playwright/k8s_playwright_demo.py
+            - --namespace
+            - default
+            - --selector
+            - app=chromedp-headless
+            - --concurrency
+            - "4"
+            - --sleep
+            - "5"

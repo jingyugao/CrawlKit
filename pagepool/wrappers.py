@@ -25,6 +25,8 @@ class BrowserWrapper:
     created_at: datetime | None = None
     _lock: asyncio.Lock = field(init=False, repr=False)
     _is_connected: bool = False
+    on_disconnect: Callable[[str], Awaitable[None]] | None = None
+    _loop: asyncio.AbstractEventLoop | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self):
         self._lock = asyncio.Lock()
@@ -53,6 +55,18 @@ class BrowserWrapper:
                 self.obj = browser
                 self.created_at = datetime.now()
                 self._is_connected = True
+                self._loop = asyncio.get_running_loop()
+
+                def _handle_disconnected() -> None:
+                    self.stats.is_healthy = False
+                    self.stats.circuit_state = "open"
+                    self.stats.active_connections = 0
+                    self._is_connected = False
+                    self.obj = None
+                    if self.on_disconnect and self._loop:
+                        self._loop.create_task(self.on_disconnect(self.endpoint))
+
+                browser.on("disconnected", _handle_disconnected)
                 self.stats.is_healthy = True
                 self.stats.total_connections += 1
                 self.stats.active_connections = 1
