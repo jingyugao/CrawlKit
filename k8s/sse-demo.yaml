@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sse-demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sse-demo
+  template:
+    metadata:
+      labels:
+        app: sse-demo
+    spec:
+      terminationGracePeriodSeconds: 210
+      containers:
+        - name: sse-demo
+          image: localhost:5000/sse-demo:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SSE_MAX_DURATION
+              value: "180"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sse-demo
+spec:
+  selector:
+    app: sse-demo
+  ports:
+    - port: 80
+      targetPort: 8000

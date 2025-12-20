@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  browserless:
+    image: browserless/chrome:latest
+    environment:
+      # Tune concurrency/timeouts as needed
+      MAX_CONCURRENT_SESSIONS: ${MAX_CONCURRENT_SESSIONS:-10}
+      CONNECTION_TIMEOUT: ${CONNECTION_TIMEOUT:-60000}
+      PREBOOT_CHROME: ${PREBOOT_CHROME:-true}
+      ENABLE_DEBUGGER: ${ENABLE_DEBUGGER:-false}
+    shm_size: 2gb
+    restart: unless-stopped
+    networks:
+      - browserless-net
+
+  gateway:
+    image: nginx:alpine
+    depends_on:
+      - browserless
+    ports:
+      - "${PUBLISHED_PORT:-9222}:3000"
+    volumes:
+      - ./docker/browserless/nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+    networks:
+      - browserless-net
+
+networks:
+  browserless-net:
+    driver: bridge
