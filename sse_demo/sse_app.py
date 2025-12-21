@@ -72,6 +72,8 @@ async def sse(
     interval = max(interval, 0.2)
     start = time.time()
 
+    hostname = os.getenv("HOSTNAME", "unknown")
+
     async def event_stream():
         seq = 0
         disconnected = False
@@ -84,14 +86,16 @@ async def sse(
                 elapsed = time.time() - start
                 if elapsed >= duration:
                     break
-                payload = {"seq": seq, "elapsed": round(elapsed, 3)}
+                payload = {"seq": seq, "elapsed": round(elapsed, 3), "hostname": hostname}
                 data = json.dumps(payload)
                 yield f"id: {seq}\nevent: tick\ndata: {data}\n\n"
                 seq += 1
                 await asyncio.sleep(interval)
 
             if not disconnected:
-                done_payload = json.dumps({"elapsed": round(time.time() - start, 3)})
+                done_payload = json.dumps(
+                    {"elapsed": round(time.time() - start, 3), "hostname": hostname}
+                )
                 yield f"event: done\ndata: {done_payload}\n\n"
         except asyncio.CancelledError:
             return

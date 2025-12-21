@@ -14,62 +14,90 @@ def build_url(base: str, duration: int, interval: float) -> str:
     return f"{base}{sep}duration={duration}&interval={interval}"
 
 
-def parse_event(event_name: str, data_lines: list[str], last_seq: int) -> tuple[bool, int, str | None]:
+def parse_event(
+    event_name: str,
+    data_lines: list[str],
+    last_seq: int,
+    hostname: str | None,
+) -> tuple[bool, int, str | None, str | None]:
     if not data_lines:
-        return False, last_seq, None
+        return False, last_seq, hostname, None
     data = "\n".join(data_lines)
     if event_name == "tick":
         try:
             payload = json.loads(data)
             seq = int(payload.get("seq", -1))
+            event_host = payload.get("hostname")
         except (ValueError, TypeError, json.JSONDecodeError):
-            return False, last_seq, f"bad tick payload: {data}"
+            return False, last_seq, hostname, f"bad tick payload: {data}"
         if seq <= last_seq:
-            return False, last_seq, f"non-monotonic seq: {seq} <= {last_seq}"
-        return False, seq, None
+            return False, last_seq, hostname, f"non-monotonic seq: {seq} <= {last_seq}"
+        if event_host:
+            if hostname and event_host != hostname:
+                return False, last_seq, hostname, f"hostname changed: {hostname} -> {event_host}"
+            hostname = event_host
+        return False, seq, hostname, None
     if event_name == "done":
-        return True, last_seq, None
-    return False, last_seq, None
+        try:
+            payload = json.loads(data)
+            event_host = payload.get("hostname")
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return True, last_seq, hostname, None
+        if event_host:
+            if hostname and event_host != hostname:
+                return False, last_seq, hostname, f"hostname changed: {hostname} -> {event_host}"
+            hostname = event_host
+        return True, last_seq, hostname, None
+    return False, last_seq, hostname, None
 
 
-def sse_once(url: str, timeout: float) -> tuple[bool, str | None]:
+def sse_once(url: str, timeout: float) -> tuple[bool, str | None, str | None]:
     event_name = ""
     data_lines: list[str] = []
     last_seq = -1
     done = False
+    hostname: str | None = None
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             start = time.time()
             for raw in resp:
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 if line == "":
-                    done, last_seq, err = parse_event(event_name, data_lines, last_seq)
+                    done, last_seq, hostname, err = parse_event(
+                        event_name, data_lines, last_seq, hostname
+                    )
                     if err:
-                        return False, err
+                        return False, err, hostname
                     event_name = ""
                     data_lines = []
                     if done:
-                        return True, None
+                        return True, None, hostname
                     continue
                 if line.startswith("event:"):
                     event_name = line.split(":", 1)[1].strip()
                 elif line.startswith("data:"):
                     data_lines.append(line.split(":", 1)[1].lstrip())
                 if time.time() - start > timeout:
-                    return False, "timeout"
+                    return False, "timeout", hostname
     except urllib.error.HTTPError as exc:
-        return False, f"http {exc.code}"
+        return False, f"http {exc.code}", hostname
     except Exception as exc:  # noqa: BLE001
-        return False, f"error: {exc}"
+        return False, f"error: {exc}", hostname
 
-    return False, "stream ended without done"
+    return False, "stream ended without done", hostname
 
 
-def worker(idx: int, url: str, timeout: float, repeat: int, results: list[tuple[bool, str | None]]) -> None:
+def worker(
+    idx: int,
+    url: str,
+    timeout: float,
+    repeat: int,
+    results: list[tuple[bool, str | None, str | None]],
+) -> None:
     count = 0
     while repeat == 0 or count < repeat:
-        ok, err = sse_once(url, timeout)
-        results.append((ok, err))
+        ok, err, hostname = sse_once(url, timeout)
+        results.append((ok, err, hostname))
         if not ok:
             return
         count += 1
@@ -95,7 +123,7 @@ def main() -> int:
     args = parser.parse_args()
 
     url = build_url(args.url, args.duration, args.interval)
-    results: list[tuple[bool, str | None]] = []
+    results: list[tuple[bool, str | None, str | None]] = []
 
     if args.scale_after > 0 and args.scale_to > 0:
         t = threading.Thread(
@@ -116,9 +144,17 @@ def main() -> int:
 
     total = len(results)
     ok = sum(1 for item in results if item[0])
-    errors = [err for ok_flag, err in results if not ok_flag]
+    errors = [err for ok_flag, err, _ in results if not ok_flag]
+    hostnames: dict[str, int] = {}
+    for ok_flag, _, hostname in results:
+        if ok_flag and hostname:
+            hostnames[hostname] = hostnames.get(hostname, 0) + 1
 
     print(f"ok: {ok}/{total}")
+    if hostnames:
+        print("hostnames:")
+        for name, count in sorted(hostnames.items()):
+            print(f"- {name}: {count}")
     if errors:
         print("errors:")
         for err in errors[:10]:
