@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mychrome
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mychrome
+  template:
+    metadata:
+      labels:
+        app: mychrome
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mychrome
+          image: mychrome:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9222
+              name: cdp
+          env:
+            - name: CHROME_FLAGS
+              value: "--headless=new --disable-gpu --no-sandbox --disable-dev-shm-usage --remote-debugging-address=127.0.0.1 --remote-debugging-port=9220"
+            - name: LISTEN_ADDR
+              value: ":9222"
+            - name: UPSTREAM_URL
+              value: "http://127.0.0.1:9220"
+            - name: SHUTDOWN_TIMEOUT
+              value: "20s"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: cdp
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: cdp
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mychrome
+  namespace: default
+spec:
+  selector:
+    app: mychrome
+  ports:
+    - name: cdp
+      port: 9222
+      targetPort: 9222

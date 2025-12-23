@@ -1,8 +1,9 @@
 """Context pool management with lifecycle and TTL support."""
 
+from __future__ import annotations
+
 import asyncio
-from typing import Optional, Set
-from datetime import datetime, timedelta
+from datetime import datetime
 from playwright.async_api import BrowserContext
 
 from .config import PoolConfig
@@ -63,7 +64,7 @@ class ContextWrapper:
         idle_time = (datetime.now() - self.last_used).total_seconds()
         return idle_time > timeout_seconds
 
-    def is_ttl_expired(self, ttl_seconds: Optional[float]) -> bool:
+    def is_ttl_expired(self, ttl_seconds: float | None) -> bool:
         """Check if context has exceeded its TTL.
 
         Args:
@@ -101,14 +102,15 @@ class ContextPool:
     """
 
     def __init__(self, browser_connection, config: PoolConfig):
-        from .connection import BrowserConnection
-        self.browser_connection: BrowserConnection = browser_connection
+        from .wrappers import BrowserWrapper
+
+        self.browser_connection: BrowserWrapper = browser_connection
         self.config = config
 
-        self._contexts: Set[ContextWrapper] = set()
+        self._contexts: set[ContextWrapper] = set()
         self._available_contexts: asyncio.Queue = asyncio.Queue()
         self._lock = asyncio.Lock()
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: asyncio.Task | None = None
 
     async def start(self):
         """Start background cleanup task."""
@@ -167,28 +169,10 @@ class ContextPool:
 
         # Create new context if under limit
         async with self._lock:
-            if len(self._contexts) < self.config.max_contexts_per_connection:
-                return await self._create_new_context()
+            return await self._create_new_context()
 
-        # Wait for an available context (with timeout)
-        try:
-            ctx_wrapper = await asyncio.wait_for(
-                self._available_contexts.get(),
-                timeout=self.config.acquire_timeout
-            )
-
-            # Check TTL before returning
-            if ctx_wrapper.is_ttl_expired(self.config.context_ttl):
-                await self._remove_context(ctx_wrapper)
-                # Recursively try again
-                return await self.acquire_context()
-
-            return await ctx_wrapper.acquire()
-
-        except asyncio.TimeoutError:
-            raise ContextAcquireError(
-                f"Timeout acquiring context after {self.config.acquire_timeout}s"
-            )
+        # Wait not allowed; fail fast
+        raise ContextAcquireError("No context available and waiting is disabled")
 
     async def release_context(self, context: BrowserContext):
         """Release a context back to the pool.
@@ -225,13 +209,21 @@ class ContextPool:
             ContextAcquireError: If creation fails.
         """
         try:
-            browser = await self.browser_connection.connect()
+            browser_wrapper = await self.browser_connection.connect()
+            if browser_wrapper.obj is None:
+                raise ContextAcquireError("Browser connection did not return an active browser")
 
             # Use custom context factory if provided
             if self.config.context_factory:
-                context = await self.config.context_factory(browser)
+                factory = self.config.context_factory
+                if isinstance(factory, dict):
+                    factory = factory.get("default") or next(iter(factory.values()), None)
+                if factory:
+                    context = await factory(browser_wrapper.obj)
+                else:
+                    context = await browser_wrapper.obj.new_context()
             else:
-                context = await browser.new_context()
+                context = await browser_wrapper.obj.new_context()
 
             # Wrap and track
             ctx_wrapper = ContextWrapper(context, datetime.now())
@@ -279,8 +271,8 @@ class ContextPool:
 
             for ctx_wrapper in self._contexts:
                 if ctx_wrapper.is_available and (
-                    ctx_wrapper.is_idle_timeout(self.config.idle_timeout) or
-                    ctx_wrapper.is_ttl_expired(self.config.context_ttl)
+                    ctx_wrapper.is_idle_timeout(self.config.idle_timeout)
+                    or ctx_wrapper.is_ttl_expired(self.config.context_ttl)
                 ):
                     to_remove.append(ctx_wrapper)
 
@@ -298,7 +290,7 @@ class ContextPool:
         """Check if this pool manages the given context."""
         return self._find_wrapper_for_context(context) is not None
 
-    def _find_wrapper_for_context(self, context: BrowserContext) -> Optional[ContextWrapper]:
+    def _find_wrapper_for_context(self, context: BrowserContext) -> ContextWrapper | None:
         """Return the wrapper associated with the context if present."""
         for wrapper in self._contexts:
             if wrapper.context == context:
