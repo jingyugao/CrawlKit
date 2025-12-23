@@ -23,6 +23,14 @@ from .load_balancer import LoadBalancer
 from .exceptions import PageAcquireError, NoHealthyEndpointsError
 
 
+@dataclass(frozen=True)
+class _PoolEvent:
+    kind: str
+    endpoint: str | None = None
+    payload: object | None = None
+    scene: str | None = None
+
+
 class PlaywrightPagePool:
     """Main page pool implementation for high-concurrency web scraping.
 
@@ -256,14 +264,6 @@ class PlaywrightPagePool:
 
     def __repr__(self) -> str:
         return f"<PlaywrightPagePool endpoints={len(self._connections)} started={self._started}>"
-
-
-@dataclass(frozen=True)
-class _PoolEvent:
-    kind: str
-    endpoint: str | None = None
-    payload: object | None = None
-    scene: str | None = None
 
     async def _resolve_endpoints(self) -> list[str]:
         """Resolve configured endpoints into a concrete list."""

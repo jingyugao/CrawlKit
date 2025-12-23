@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from playwright.async_api import BrowserContext
 
 from .config import PoolConfig
@@ -103,6 +103,7 @@ class ContextPool:
 
     def __init__(self, browser_connection, config: PoolConfig):
         from .wrappers import BrowserWrapper
+
         self.browser_connection: BrowserWrapper = browser_connection
         self.config = config
 
@@ -270,8 +271,8 @@ class ContextPool:
 
             for ctx_wrapper in self._contexts:
                 if ctx_wrapper.is_available and (
-                    ctx_wrapper.is_idle_timeout(self.config.idle_timeout) or
-                    ctx_wrapper.is_ttl_expired(self.config.context_ttl)
+                    ctx_wrapper.is_idle_timeout(self.config.idle_timeout)
+                    or ctx_wrapper.is_ttl_expired(self.config.context_ttl)
                 ):
                     to_remove.append(ctx_wrapper)
 
