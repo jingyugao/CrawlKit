@@ -139,10 +139,7 @@ class PlaywrightPagePool:
             PageAcquireError: If unable to acquire a page.
         """
         if not self._started:
-            await self.start()
-
-        # Refresh endpoints every acquire to reflect dynamic sources
-        await self._refresh_endpoints()
+            raise PageAcquireError("Pool not started; call start() first")
 
         # Select endpoint using load balancer, retrying other endpoints if one closes mid-acquire.
         stats = {
@@ -167,7 +164,6 @@ class PlaywrightPagePool:
             try:
                 page_wrapper = await self._acquire_page_for_endpoint(endpoint, connection, scene)
                 page_wrapper._releaser = self.release_page
-                self._schedule_spawn_pages(endpoint)
                 return page_wrapper
             except PageAcquireError as exc:
                 last_error = exc
@@ -273,43 +269,19 @@ class PlaywrightPagePool:
         connection: BrowserWrapper,
         scene: str | None = None,
     ) -> PageWrapper:
-        """Get a page for the given endpoint, reusing existing pages when possible."""
+        """Get a page for the given endpoint from the idle queue only."""
         idle_queue = self._idle_pages[endpoint]
-        contexts = self._endpoint_contexts[endpoint]
 
-        # 1) Try reusing an idle page
+        # 1) Try reusing a warm idle page (not previously used by a client).
         page_wrapper = await self._pop_usable_idle_page(idle_queue, endpoint, connection)
         if page_wrapper:
+            self._schedule_spawn_pages(endpoint)
             return page_wrapper
 
-        # 2) Pick or create a context with capacity (respect caps)
-        context_with_capacity = self._select_context_with_capacity(contexts)
-        if not context_with_capacity and self._can_create_more_pages(endpoint):
-            context_with_capacity = await self._create_context(endpoint, connection, scene)
-
-        # 3) If still no context, fail fast (no waiting when disabled)
-        if context_with_capacity is None:
-            raise PageAcquireError("No context available and acquire wait disabled")
-
-        # 4) Create a new page on the selected context
-        if not self._can_create_more_pages(endpoint):
-            raise PageAcquireError("Page cap reached; cannot allocate more pages")
-
-        try:
-            page = await context_with_capacity.obj.new_page()
-        except Exception as e:  # noqa: BLE001
-            raise PageAcquireError(f"Failed to create page: {e}") from e
-
-        page_wrapper = PageWrapper(
-            obj=page,
-            context=context_with_capacity,
-            created_at=datetime.now(),
-        )
-
-        context_with_capacity.inc_pages()
-        connection.stats.total_pages += 1
-        connection.stats.active_pages += 1
-        return page_wrapper
+        # 2) Ensure background refill is scheduled, then fail fast.
+        if self._can_create_more_pages(endpoint):
+            self._schedule_spawn_pages(endpoint)
+        raise PageAcquireError("No idle pages available; background refill scheduled")
 
     async def _pop_usable_idle_page(
         self,
@@ -377,8 +349,10 @@ class PlaywrightPagePool:
                 await self._cleanup_endpoint(endpoint)
             return
 
-        # Reuse page by returning to idle queue
-        await self._idle_pages[endpoint].put(page_wrapper)
+        # No page reuse; discard after use and refill idle queue if needed.
+        await self._discard_page(page_wrapper.obj)
+        if context_expired and ctx_wrapper.active_pages == 0:
+            await self._discard_context(ctx_wrapper, endpoint)
         self._schedule_spawn_pages(endpoint)
 
     def _select_context_with_capacity(self, contexts: list[ContextWrapper]) -> ContextWrapper | None:
@@ -392,7 +366,7 @@ class PlaywrightPagePool:
         return None
 
     def _can_create_more_pages(self, endpoint: str) -> bool:
-        """Check against global and idle page caps."""
+        """Check against global page caps."""
         if endpoint in self._draining_endpoints:
             return False
         total_pages = sum(
@@ -437,6 +411,22 @@ class PlaywrightPagePool:
             return factory.get(scene)
         return factory
 
+    def _resolve_page_init(self, scene: str | None) -> Callable[[Page], Awaitable[None]] | None:
+        """Select page init by scene if mapping is provided."""
+        initializer = self.config.page_init
+        if initializer is None:
+            return None
+        if isinstance(initializer, dict):
+            if scene is None:
+                return initializer.get("default") or next(iter(initializer.values()), None)
+            return initializer.get(scene)
+        return initializer
+
+    async def _apply_page_init(self, page: Page, scene: str | None) -> None:
+        initializer = self._resolve_page_init(scene)
+        if initializer:
+            await initializer(page)
+
     async def _spawn_idle_page(self, endpoint: str):
         """Create a page and return it to the idle queue without counting as active."""
         if self.config.min_active_page <= 0:
@@ -465,6 +455,12 @@ class PlaywrightPagePool:
         except Exception:
             return
 
+        try:
+            await self._apply_page_init(page, None)
+        except Exception:
+            await self._discard_page(page)
+            return
+
         page_wrapper = PageWrapper(
             obj=page,
             context=context_with_capacity,
@@ -483,7 +479,10 @@ class PlaywrightPagePool:
         if idle_queue is None:
             return
 
-        deficit = self.config.min_active_page - idle_queue.qsize()
+        target = self.config.min_active_page
+        if self.config.max_idle_pages:
+            target = min(target, self.config.max_idle_pages)
+        deficit = target - idle_queue.qsize()
         if deficit <= 0:
             return
 

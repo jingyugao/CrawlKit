@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Any, Dict, Awaitable
 
-from playwright.async_api import Browser, BrowserContext
+from playwright.async_api import Browser, BrowserContext, Page
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,6 +22,7 @@ class PoolConfig(BaseModel):
         context_factory: Optional custom function (or mapping of scene -> function) to create browser contexts.
         load_balancer: Optional custom function to select endpoints for load balancing.
         cdp_connect_opts: Extra kwargs passed to Playwright chromium.connect_over_cdp (headers, slow_mo, timeout, etc.).
+        page_init: Optional function (or mapping of scene -> function) to initialize pages before use.
         reuse_contexts: Whether to reuse contexts across page acquisitions.
         auto_cleanup: Whether to automatically cleanup idle resources.
         strict_mode: If True, raise errors on connection failures. If False, retry/continue.
@@ -50,6 +51,7 @@ class PoolConfig(BaseModel):
 
     # Customization
     context_factory: Callable[[Browser], Awaitable[BrowserContext]] | Dict[str, Callable[[Browser], Awaitable[BrowserContext]]] | None = None
+    page_init: Callable[[Page], Awaitable[None]] | Dict[str, Callable[[Page], Awaitable[None]]] | None = None
     load_balancer: Callable[[Dict[str, "ConnectionStats"]], str] | None = None
 
     # Connection parameters
