@@ -8,7 +8,6 @@ import (
 )
 
 type ProxyInfo struct {
-	ID        string    `json:"id"`
 	IP        string    `json:"ip"`
 	Port      int       `json:"port"`
 	Username  string    `json:"username"`
@@ -92,8 +91,8 @@ func (p *ProxyPool) Select(policy UserPolicy, bindKey string) (ProxyEntry, error
 	defer p.mu.Unlock()
 
 	if bindKey != "" {
-		if boundID, ok := p.bindings[bindKey]; ok {
-			if entry, ok := p.findByID(boundID); ok && isEligible(entry, policy) {
+		if boundAddr, ok := p.bindings[bindKey]; ok {
+			if entry, ok := p.findByAddr(boundAddr); ok && isEligible(entry, policy) {
 				if entry.QPS.TryUse(policy.MinRemainingQPS) {
 					return entry, nil
 				}
@@ -107,7 +106,7 @@ func (p *ProxyPool) Select(policy UserPolicy, bindKey string) (ProxyEntry, error
 		return ProxyEntry{}, errors.New("no available proxies")
 	}
 	if bindKey != "" {
-		p.bindings[bindKey] = entry.Info.ID
+		p.bindings[bindKey] = addrKey(entry.Info)
 	}
 	return entry, nil
 }
@@ -147,9 +146,9 @@ func (p *ProxyPool) prune() {
 	p.entries = filtered
 }
 
-func (p *ProxyPool) findByID(id string) (ProxyEntry, bool) {
+func (p *ProxyPool) findByAddr(addr string) (ProxyEntry, bool) {
 	for _, entry := range p.entries {
-		if entry.Info.ID == id {
+		if addrKey(entry.Info) == addr {
 			return entry, true
 		}
 	}
@@ -157,9 +156,6 @@ func (p *ProxyPool) findByID(id string) (ProxyEntry, bool) {
 }
 
 func isEligible(entry ProxyEntry, policy UserPolicy) bool {
-	if entry.Info.MaxQPS < policy.MinMaxQPSRequired {
-		return false
-	}
 	if policy.MinTTLSeconds > 0 {
 		remaining := time.Until(entry.Info.ExpiresAt)
 		if remaining < time.Duration(policy.MinTTLSeconds)*time.Second {
@@ -169,11 +165,8 @@ func isEligible(entry ProxyEntry, policy UserPolicy) bool {
 	return entry.QPS.Remaining() > policy.MinRemainingQPS
 }
 
-func EnsureIDs(infos []ProxyInfo) error {
+func ValidateProxies(infos []ProxyInfo) error {
 	for i := range infos {
-		if infos[i].ID == "" {
-			infos[i].ID = fmt.Sprintf("proxy-%d-%d", time.Now().UnixNano(), i)
-		}
 		if infos[i].IP == "" || infos[i].Port == 0 {
 			return errors.New("proxy info missing ip or port")
 		}
@@ -182,4 +175,8 @@ func EnsureIDs(infos []ProxyInfo) error {
 		}
 	}
 	return nil
+}
+
+func addrKey(info ProxyInfo) string {
+	return fmt.Sprintf("%s:%d", info.IP, info.Port)
 }

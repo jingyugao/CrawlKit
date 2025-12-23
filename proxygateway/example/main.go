@@ -17,7 +17,7 @@ func main() {
 	configPath := flag.String("config", "config.json", "path to config JSON")
 	flag.Parse()
 
-	cfg, err := proxygateway.LoadConfig(*configPath)
+	cfg, err := LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -28,7 +28,6 @@ func main() {
 			Policy: proxygateway.UserPolicy{
 				MinTTLSeconds:     120,
 				MinRemainingQPS:   3,
-				MinMaxQPSRequired: 10,
 			},
 		},
 	}
@@ -38,18 +37,15 @@ func main() {
 		return cfg, ok, nil
 	}
 
-	var allocator proxygateway.AllocatorFunc
-	if cfg.AllocatorURL != "" {
-		allocator = proxygateway.NewHTTPAllocator(cfg.AllocatorURL, cfg.AllocatorTimeout.Duration)
-	}
+	allocator := NewHTTPAllocator("http://127.0.0.1:9000/proxies", 5*time.Second)
 
 	pool := proxygateway.NewProxyPool(allocator)
-	if err := proxygateway.EnsureIDs(cfg.BootstrapProxies); err != nil && len(cfg.BootstrapProxies) > 0 {
+	if err := proxygateway.ValidateProxies(cfg.BootstrapProxies); err != nil && len(cfg.BootstrapProxies) > 0 {
 		log.Fatalf("invalid bootstrap proxies: %v", err)
 	}
 	pool.AddBatch(cfg.BootstrapProxies)
 
-	server := proxygateway.NewProxyServer(pool, cfg.DefaultPolicy, getUser, nil)
+	server := proxygateway.NewProxyServer(pool, proxygateway.UserPolicy{}, getUser, nil)
 	httpServer := &http.Server{
 		Addr:         cfg.ListenAddr,
 		Handler:      server,

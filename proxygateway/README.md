@@ -4,7 +4,7 @@ A lightweight HTTPS tunnel proxy gateway that selects upstream proxies based on 
 
 ## Features
 - HTTPS CONNECT proxy server
-- Per-user policy filters (TTL, remaining QPS, min max-QPS)
+- Per-user policy filters (TTL, remaining QPS)
 - Optional channel binding (`user:password:channel`)
 - Auto-fetch proxies from an allocator API when pool is empty
 
@@ -16,16 +16,8 @@ Create `config.json`:
   "listen_addr": ":8443",
   "tls_cert_file": "",
   "tls_key_file": "",
-  "allocator_url": "http://127.0.0.1:9000/proxies",
-  "allocator_timeout_seconds": 5,
-  "default_policy": {
-    "min_ttl_seconds": 60,
-    "min_remaining_qps": 2,
-    "min_max_qps": 5
-  },
   "bootstrap_proxies": [
     {
-      "id": "p-1",
       "ip": "203.0.113.10",
       "port": 3128,
       "username": "upuser",
@@ -43,7 +35,6 @@ Allocator API response format:
 {
   "proxies": [
     {
-      "id": "p-2",
       "ip": "203.0.113.11",
       "port": 3128,
       "username": "upuser",
@@ -67,3 +58,6 @@ Clients should send `Proxy-Authorization: Basic` with `user:password` or `user:p
 
 ## User Lookup
 The library expects a `GetUserFunc` callback. See `proxygateway/example/main.go` for an in-memory map example.
+
+## Allocator Example
+`proxygateway/example/allocator_http.go` shows a simple HTTP-based allocator implementation.

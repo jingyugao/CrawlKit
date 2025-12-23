@@ -139,9 +139,6 @@ func (s *ProxyServer) authenticate(r *http.Request) (string, UserPolicy, string,
 	if policy.MinRemainingQPS == 0 {
 		policy.MinRemainingQPS = s.defaultPolicy.MinRemainingQPS
 	}
-	if policy.MinMaxQPSRequired == 0 {
-		policy.MinMaxQPSRequired = s.defaultPolicy.MinMaxQPSRequired
-	}
 	bindKey := ""
 	if channel != "" {
 		bindKey = user + ":" + channel
@@ -161,7 +158,7 @@ func (s *ProxyServer) selectProxy(ctx context.Context, policy UserPolicy, bindKe
 	if fetchErr != nil {
 		return ProxyEntry{}, fetchErr
 	}
-	if err := EnsureIDs(proxies); err != nil {
+	if err := ValidateProxies(proxies); err != nil {
 		return ProxyEntry{}, err
 	}
 	s.pool.AddBatch(proxies)
