@@ -174,6 +174,8 @@ async def cleanup_page_hooks(page, hooks) -> None:
 async def run_scenario(
     name: str,
     cdp_endpoint: str,
+    target_url: str,
+    wait_for_url: str | None,
     pool_size: int,
     total_tasks: int,
     concurrency: int,
@@ -182,6 +184,9 @@ async def run_scenario(
     label: str,
     sample_interval: float,
     nav_timeout_ms: int,
+    max_uses: int,
+    warmup_tasks: int,
+    usage_rows: list[dict],
 ) -> tuple[list[ResourceSample], list[float]]:
     print(f"[{utc_now()}] scenario {name}: starting")
     samples: list[ResourceSample] = []
@@ -203,6 +208,7 @@ async def run_scenario(
             hooks = register_page_hooks(page)
             await page.route("**/*", hooks[2])
             page._demo_hooks = hooks
+            page._demo_uses = 0
             await free_pages.put(page)
 
         sem = asyncio.Semaphore(concurrency)
@@ -227,6 +233,7 @@ async def run_scenario(
             hooks = register_page_hooks(new_page)
             await new_page.route("**/*", hooks[2])
             new_page._demo_hooks = hooks
+            new_page._demo_uses = 0
             await free_pages.put(new_page)
 
         async def close_and_replace(page) -> None:
@@ -236,30 +243,59 @@ async def run_scenario(
             hooks = register_page_hooks(new_page)
             await new_page.route("**/*", hooks[2])
             new_page._demo_hooks = hooks
+            new_page._demo_uses = 0
             await free_pages.put(new_page)
 
-        async def run_one(idx: int) -> None:
+        async def wait_for_frame_url(page, target: str, timeout_ms: int) -> None:
+            target_event = asyncio.Event()
+
+            def on_frame(frame) -> None:
+                if frame == page.main_frame and frame.url.startswith(target):
+                    target_event.set()
+
+            page.on("framenavigated", on_frame)
+            try:
+                if page.main_frame.url.startswith(target):
+                    return
+                await asyncio.wait_for(target_event.wait(), timeout=timeout_ms / 1000.0)
+            finally:
+                page.remove_listener("framenavigated", on_frame)
+
+        async def run_one(idx: int, record: bool) -> None:
             async with sem:
                 if fatal_error.is_set():
                     return
                 page = await free_pages.get()
+                usage_count = getattr(page, "_demo_uses", 0) + 1
                 try:
                     started = time.perf_counter()
                     await page.goto(
-                        "https://example.com",
+                        target_url,
                         wait_until="domcontentloaded",
                         timeout=nav_timeout_ms,
                     )
+                    if wait_for_url:
+                        await wait_for_frame_url(page, wait_for_url, nav_timeout_ms)
                     await page.title()
-                    timings_ms.append((time.perf_counter() - started) * 1000.0)
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    if record:
+                        timings_ms.append(elapsed_ms)
+                        if usage_rows is not None:
+                            usage_rows.append(
+                                {"usage": usage_count, "timing_ms": round(elapsed_ms, 2)}
+                            )
                 except Exception as exc:
                     if exc.__class__.__name__ == "TargetClosedError":
                         print(f"[{utc_now()}] {name}: TargetClosedError")
                         fatal_error.set()
                 finally:
                     if reuse_pages:
+                        page._demo_uses = usage_count
                         if not page.is_closed():
-                            task = asyncio.create_task(return_after_cleanup(page))
+                            if max_uses > 0 and usage_count >= max_uses:
+                                task = asyncio.create_task(close_and_replace(page))
+                            else:
+                                task = asyncio.create_task(return_after_cleanup(page))
                             await track_task(task)
                         else:
                             if not fatal_error.is_set():
@@ -270,7 +306,11 @@ async def run_scenario(
                             task = asyncio.create_task(close_and_replace(page))
                             await track_task(task)
 
-        tasks = [asyncio.create_task(run_one(i)) for i in range(total_tasks)]
+        if warmup_tasks > 0:
+            warmup = [asyncio.create_task(run_one(i, False)) for i in range(warmup_tasks)]
+            await asyncio.gather(*warmup, return_exceptions=True)
+
+        tasks = [asyncio.create_task(run_one(i, True)) for i in range(total_tasks)]
         pending = set(tasks)
         while pending:
             done, pending = await asyncio.wait(pending, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
@@ -350,10 +390,13 @@ async def main_async(args: argparse.Namespace) -> int:
     try:
         scenario_a: tuple[list[ResourceSample], list[float]] = ([], [])
         scenario_b: tuple[list[ResourceSample], list[float]] = ([], [])
+        usage_rows: list[dict] = []
         if args.scenario in ("B", "both"):
             scenario_b = await run_scenario(
                 name="B(recreate)",
                 cdp_endpoint=args.cdp,
+                target_url=args.url,
+                wait_for_url=args.wait_for_url or None,
                 pool_size=args.pages,
                 total_tasks=args.tasks,
                 concurrency=args.concurrency,
@@ -362,6 +405,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 label=args.label,
                 sample_interval=args.sample_interval,
                 nav_timeout_ms=args.nav_timeout_ms,
+                max_uses=0,
+                warmup_tasks=args.warmup_tasks,
+                usage_rows=[],
             )
             if args.scenario == "both":
                 await asyncio.sleep(args.cooldown)
@@ -369,6 +415,8 @@ async def main_async(args: argparse.Namespace) -> int:
             scenario_a = await run_scenario(
                 name="A(reuse)",
                 cdp_endpoint=args.cdp,
+                target_url=args.url,
+                wait_for_url=args.wait_for_url or None,
                 pool_size=args.pages,
                 total_tasks=args.tasks,
                 concurrency=args.concurrency,
@@ -377,6 +425,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 label=args.label,
                 sample_interval=args.sample_interval,
                 nav_timeout_ms=args.nav_timeout_ms,
+                max_uses=args.max_uses,
+                warmup_tasks=args.warmup_tasks,
+                usage_rows=usage_rows,
             )
     finally:
         port_forward.terminate()
@@ -387,6 +438,12 @@ async def main_async(args: argparse.Namespace) -> int:
     if scenario_b[0] or scenario_b[1]:
         summary_b = summarize_samples(scenario_b[0]) | summarize_timings(scenario_b[1])
         print("[result] scenario B", summary_b)
+    if args.usage_csv and usage_rows:
+        import csv
+        with open(args.usage_csv, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=["usage", "timing_ms"])
+            writer.writeheader()
+            writer.writerows(usage_rows)
     return 0
 
 
@@ -406,6 +463,11 @@ def main() -> int:
     parser.add_argument("--cooldown", type=float, default=5.0)
     parser.add_argument("--nav-timeout-ms", type=int, default=15000)
     parser.add_argument("--scenario", choices=["A", "B", "both"], default="both")
+    parser.add_argument("--url", default="https://example.com")
+    parser.add_argument("--wait-for-url", default="")
+    parser.add_argument("--max-uses", type=int, default=0)
+    parser.add_argument("--warmup-tasks", type=int, default=0)
+    parser.add_argument("--usage-csv", default="")
     args = parser.parse_args()
     return asyncio.run(main_async(args))
 

@@ -62,7 +62,7 @@ def parse_result(output: str) -> dict:
 
 def run_scenario(args: argparse.Namespace, scenario: str) -> dict:
     cmd = [
-        "python",
+        args.python,
         "sse_demo/scripts/chromedp_page_pool_demo.py",
         "--namespace",
         args.namespace,
@@ -83,6 +83,9 @@ def run_scenario(args: argparse.Namespace, scenario: str) -> dict:
         "--scenario",
         scenario,
     ]
+    cmd.extend(["--url", args.url])
+    if args.wait_for_url:
+        cmd.extend(["--wait-for-url", args.wait_for_url])
     print(f"[runner] start scenario {scenario}")
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     print(result.stdout, end="")
@@ -91,8 +94,44 @@ def run_scenario(args: argparse.Namespace, scenario: str) -> dict:
     return parse_result(result.stdout)
 
 
+def run_warmup(args: argparse.Namespace) -> None:
+    if args.warmup_tasks <= 0:
+        return
+    cmd = [
+        args.python,
+        "sse_demo/scripts/chromedp_page_pool_demo.py",
+        "--namespace",
+        args.namespace,
+        "--service",
+        args.service,
+        "--label",
+        args.label,
+        "--cdp",
+        args.cdp,
+        "--tasks",
+        "0",
+        "--pages",
+        str(args.pages),
+        "--concurrency",
+        str(args.concurrency),
+        "--nav-timeout-ms",
+        str(args.nav_timeout_ms),
+        "--scenario",
+        "A",
+        "--url",
+        args.url,
+        "--warmup-tasks",
+        str(args.warmup_tasks),
+    ]
+    if args.wait_for_url:
+        cmd.extend(["--wait-for-url", args.wait_for_url])
+    print("[runner] warmup start")
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run page pool scenarios in separate processes")
+    parser.add_argument("--python", default=".venv/bin/python")
     parser.add_argument("--namespace", default="default")
     parser.add_argument("--service", default="mychrome")
     parser.add_argument("--label", default="app=mychrome")
@@ -105,6 +144,9 @@ def main() -> int:
     parser.add_argument("--pod-restart-timeout", type=int, default=120)
     parser.add_argument("--metrics-timeout", type=int, default=30)
     parser.add_argument("--csv", default="sse_demo/scripts/chromedp_page_pool_results.csv")
+    parser.add_argument("--url", default="https://example.com")
+    parser.add_argument("--wait-for-url", default="")
+    parser.add_argument("--warmup-tasks", type=int, default=0)
     args = parser.parse_args()
 
     order = ["B", "A"]
@@ -113,6 +155,7 @@ def main() -> int:
         scenario = order[idx % 2]
         restart_pods(args.namespace, args.label, args.pod_restart_timeout)
         wait_metrics_ready(args.namespace, args.label, args.metrics_timeout)
+        run_warmup(args)
         summary = run_scenario(args, scenario)
         row = {
             "iteration": idx + 1,
@@ -164,6 +207,22 @@ def main() -> int:
             f"mem_avg mean={mem_avg_mean:.2f}B std={mem_avg_std:.2f}B "
             f"nav_avg mean={nav_avg_mean:.2f}ms std={nav_avg_std:.2f}ms "
             f"nav_p95 mean={nav_p95_mean:.2f}ms std={nav_p95_std:.2f}ms"
+        )
+
+    paired = []
+    for i in range(1, args.iterations + 1):
+        a_rows = [r for r in rows if r["iteration"] == i and r["scenario"] == "A"]
+        b_rows = [r for r in rows if r["iteration"] == i and r["scenario"] == "B"]
+        if a_rows and b_rows:
+            paired.append((a_rows[0], b_rows[0]))
+    if paired:
+        diffs_avg = [p[0]["nav_avg_ms"] - p[1]["nav_avg_ms"] for p in paired]
+        diffs_p95 = [p[0]["nav_p95_ms"] - p[1]["nav_p95_ms"] for p in paired]
+        print(
+            f"[paired] nav_avg A-B mean={statistics.mean(diffs_avg):.2f}ms std={statistics.pstdev(diffs_avg):.2f}ms"
+        )
+        print(
+            f"[paired] nav_p95 A-B mean={statistics.mean(diffs_p95):.2f}ms std={statistics.pstdev(diffs_p95):.2f}ms"
         )
 
     return 0

@@ -5,7 +5,7 @@ import signal
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 
 MAX_DURATION = int(os.getenv("SSE_MAX_DURATION", "180"))
 DEFAULT_INTERVAL = float(os.getenv("SSE_INTERVAL", "1.0"))
@@ -108,3 +108,139 @@ async def sse(
         "X-Accel-Buffering": "no",
     }
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+@app.get("/demo-page", response_class=HTMLResponse)
+async def demo_page():
+    html = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo Page</title>
+  <style>
+    :root {
+      --bg1: #0b0f1a;
+      --bg2: #1a2238;
+      --accent: #f5d76e;
+      --accent-2: #ff7f66;
+      --ink: #f6f4ef;
+    }
+    body {
+      margin: 0;
+      font-family: "Georgia", "Times New Roman", serif;
+      color: var(--ink);
+      background: radial-gradient(1200px 700px at 20% 10%, #22305a 0%, var(--bg1) 40%),
+                  radial-gradient(900px 600px at 80% 80%, #2a3c6f 0%, var(--bg2) 45%);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+    .card {
+      width: min(900px, 92vw);
+      background: rgba(14, 18, 32, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 24px;
+      padding: 36px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(10px);
+    }
+    .title {
+      font-size: clamp(28px, 4vw, 40px);
+      margin: 0 0 16px;
+      letter-spacing: 0.6px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .tile {
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+      border-radius: 16px;
+      padding: 14px 16px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      min-height: 90px;
+    }
+    .tile h4 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .bar {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+    .bar span {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 600ms ease;
+    }
+    .status {
+      margin-top: 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: #b9c6e4;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      box-shadow: 0 0 12px var(--accent-2);
+      animation: pulse 1.2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(0.9); opacity: 0.6; }
+      50% { transform: scale(1.2); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 class="title">Signal Warmup Dashboard</h1>
+    <p>This page runs JS tasks, updates DOM, and then redirects.</p>
+    <div class="grid" id="grid"></div>
+    <div class="status"><span class="dot"></span><span id="statusText">Initializing...</span></div>
+  </div>
+  <script>
+    const grid = document.getElementById("grid");
+    const statusText = document.getElementById("statusText");
+    const tiles = [];
+    for (let i = 0; i < 8; i++) {
+      const tile = document.createElement("div");
+      tile.className = "tile";
+      tile.innerHTML = "<h4>channel " + (i + 1) + "</h4><div class=\\"bar\\"><span></span></div>";
+      grid.appendChild(tile);
+      tiles.push(tile.querySelector("span"));
+    }
+    let step = 0;
+    const interval = setInterval(() => {
+      step += 1;
+      tiles.forEach((bar, idx) => {
+        const val = Math.min(100, (step * 13 + idx * 7) % 101);
+        bar.style.width = val + "%";
+      });
+      statusText.textContent = "Processing step " + step;
+      if (step >= 12) {
+        clearInterval(interval);
+        statusText.textContent = "Redirecting to example.com...";
+        setTimeout(() => {
+          window.location.href = "https://example.com";
+        }, 500);
+      }
+    }, 120);
+  </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
