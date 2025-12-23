@@ -1,4 +1,4 @@
-"""pwutil - Playwright Page Pool for high-concurrency web scraping.
+"""pagepool - Playwright Page Pool for high-concurrency web scraping.
 
 A high-performance page pool implementation with CDP protocol support,
 dynamic endpoint management, custom load balancing, and TTL management.
@@ -6,7 +6,7 @@ dynamic endpoint management, custom load balancing, and TTL management.
 
 from .pool import PlaywrightPagePool
 from .config import PoolConfig, ConnectionStats
-from .page_wrapper import PageWrapper
+from .wrappers import PageWrapper
 from .load_balancer import (
     LoadBalancer,
     round_robin_balancer,
@@ -18,7 +18,6 @@ from .exceptions import (
     PoolException,
     NoHealthyEndpointsError,
     AcquireTimeoutError,
-    CircuitBreakerOpenError,
     EndpointConnectionError,
     ContextAcquireError,
     PageAcquireError,
@@ -42,7 +41,6 @@ __all__ = [
     "PoolException",
     "NoHealthyEndpointsError",
     "AcquireTimeoutError",
-    "CircuitBreakerOpenError",
     "EndpointConnectionError",
     "ContextAcquireError",
     "PageAcquireError",

@@ -1,7 +1,9 @@
 """Load balancing strategies for endpoint selection."""
 
-from typing import Dict, Callable, Optional
+from __future__ import annotations
+
 import random
+from typing import Callable, Dict
 
 from .config import ConnectionStats
 from .exceptions import NoHealthyEndpointsError
@@ -18,7 +20,7 @@ class LoadBalancer:
     def __init__(
         self,
         endpoints: list[str],
-        custom_balancer: Optional[Callable[[Dict[str, ConnectionStats]], str]] = None
+        custom_balancer: Callable[[Dict[str, ConnectionStats]], str] | None = None
     ):
         self.endpoints = endpoints
         self.custom_balancer = custom_balancer
@@ -72,7 +74,7 @@ class LoadBalancer:
 # Example custom load balancers users can provide
 
 
-def round_robin_balancer(state: Optional[dict] = None):
+def round_robin_balancer(state: dict | None = None):
     """Create a round-robin load balancer.
 
     Args:
