@@ -119,6 +119,7 @@ class ContextWrapper:
     endpoint: str
     created_at: datetime
     active_pages: int = 0
+    draining: bool = False
 
     @property
     def context(self) -> BrowserContext:

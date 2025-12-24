@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+import json
 import logging
 from datetime import datetime
 from typing import Dict, Tuple, cast, Callable, Awaitable
+from urllib.parse import urlparse, urlunparse
+from urllib.request import urlopen
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from playwright.async_api import (
     async_playwright,
     Playwright,
-    Browser,
     BrowserContext,
     Page,
 )
@@ -59,6 +61,7 @@ class PlaywrightPagePool:
         self._event_queue: asyncio.Queue["_PoolEvent"] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._refill_pending: set[str] = set()
+        self._stats_task: asyncio.Task | None = None
 
         self._started = False
         self._lock = asyncio.Lock()
@@ -77,6 +80,8 @@ class PlaywrightPagePool:
 
             # Start worker loop
             self._worker_task = asyncio.create_task(self._worker_loop())
+            self._stats_task = asyncio.create_task(self._stats_loop())
+            await self._warmup_idle_pages()
 
             self._started = True
 
@@ -89,6 +94,13 @@ class PlaywrightPagePool:
             if self._worker_task:
                 await self._worker_task
                 self._worker_task = None
+            if self._stats_task:
+                self._stats_task.cancel()
+                try:
+                    await self._stats_task
+                except asyncio.CancelledError:
+                    pass
+                self._stats_task = None
 
             # Cleanup endpoint resources
             for endpoint in list(self._connections.keys()):
@@ -253,15 +265,6 @@ class PlaywrightPagePool:
             for endpoint, connection in self._connections.items()
         }
 
-    async def __aenter__(self):
-        """Context manager support for the pool itself."""
-        await self.start()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Context manager cleanup."""
-        await self.stop()
-
     def __repr__(self) -> str:
         return f"<PlaywrightPagePool endpoints={len(self._connections)} started={self._started}>"
 
@@ -281,6 +284,99 @@ class PlaywrightPagePool:
 
         resolved_iterable = cast(Iterable[str], resolved)
         return list(resolved_iterable)
+
+    async def _warmup_idle_pages(self) -> None:
+        if self.config.min_active_page <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 10.0
+        for endpoint in list(self._connections.keys()):
+            idle_queue = self._idle_pages.get(endpoint)
+            if idle_queue is None:
+                continue
+            target = self.config.min_active_page
+            if self.config.max_idle_pages:
+                target = min(target, self.config.max_idle_pages)
+            logging.info("warmup start %s: idle=%d target=%d", endpoint, idle_queue.qsize(), target)
+            while idle_queue.qsize() < target and loop.time() < deadline:
+                await self._refill_pending_pages(endpoint)
+                await asyncio.sleep(0.1)
+            if idle_queue.qsize() < target:
+                logging.warning(
+                    "warmup incomplete for %s: idle=%d target=%d",
+                    endpoint,
+                    idle_queue.qsize(),
+                    target,
+                )
+            else:
+                logging.info("warmup complete %s: idle=%d", endpoint, idle_queue.qsize())
+
+    async def _stats_loop(self) -> None:
+        while True:
+            await asyncio.sleep(1)
+            await self._refresh_connection_stats()
+
+    async def _refresh_connection_stats(self) -> None:
+        if not self._connections:
+            return
+        tasks = [
+            self._update_connection_stats(endpoint, connection)
+            for endpoint, connection in self._connections.items()
+        ]
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logging.debug("stats refresh error: %s", result)
+
+    def _build_stats_url(self, endpoint: str) -> str:
+        parsed = urlparse(endpoint)
+        scheme = parsed.scheme
+        if scheme == "ws":
+            scheme = "http"
+        elif scheme == "wss":
+            scheme = "https"
+        return urlunparse(parsed._replace(scheme=scheme, path="/stats", query="", fragment=""))
+
+    async def _update_connection_stats(self, endpoint: str, connection: BrowserWrapper) -> None:
+        url = self._build_stats_url(endpoint)
+        payload = await asyncio.to_thread(self._fetch_stats_payload, url)
+        if not payload:
+            return
+        stats = connection.stats
+        stats.stats_cpu_percent = payload.get("cpu_percent", stats.stats_cpu_percent)
+        stats.stats_mem_total_bytes = payload.get("mem_total_bytes", stats.stats_mem_total_bytes)
+        stats.stats_mem_used_bytes = payload.get("mem_used_bytes", stats.stats_mem_used_bytes)
+        stats.stats_mem_used_percent = payload.get("mem_used_percent", stats.stats_mem_used_percent)
+        pages = payload.get("pages")
+        if pages is None:
+            pages = payload.get("page_count")
+        if pages is not None:
+            try:
+                stats.stats_pages = int(pages)
+            except (TypeError, ValueError):
+                pass
+        contexts = payload.get("contexts")
+        if contexts is None:
+            contexts = payload.get("context_count")
+        if contexts is not None:
+            try:
+                stats.stats_contexts = int(contexts)
+            except (TypeError, ValueError):
+                pass
+        if "collected_at" in payload:
+            stats.stats_collected_at = str(payload.get("collected_at"))
+
+    def _fetch_stats_payload(self, url: str) -> dict | None:
+        try:
+            with urlopen(url, timeout=2) as response:
+                data = response.read()
+        except Exception:
+            return None
+        try:
+            return json.loads(data.decode("utf-8"))
+        except json.JSONDecodeError:
+            return None
 
     async def _acquire_page_for_endpoint(
         self,
@@ -331,9 +427,15 @@ class PlaywrightPagePool:
     ) -> PageWrapper | None:
         """Validate and mark an idle page as in-use."""
         ctx_wrapper = page_wrapper.context
-        if page_wrapper.obj.is_closed() or ctx_wrapper.ttl_expired(self.config.context_ttl):
+        if ctx_wrapper.ttl_expired(self.config.context_ttl) and not ctx_wrapper.draining:
+            await self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper])
+        if (
+            page_wrapper.obj.is_closed()
+            or ctx_wrapper.draining
+            or ctx_wrapper.ttl_expired(self.config.context_ttl)
+        ):
             await self._enqueue_event(_PoolEvent(kind="discard_page", payload=page_wrapper.obj))
-            if ctx_wrapper.active_pages == 0 and ctx_wrapper.ttl_expired(self.config.context_ttl):
+            if ctx_wrapper.active_pages == 0 and (ctx_wrapper.draining or ctx_wrapper.ttl_expired(self.config.context_ttl)):
                 await self._enqueue_event(
                     _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
                 )
@@ -354,6 +456,12 @@ class PlaywrightPagePool:
         connection.stats.active_pages = max(0, connection.stats.active_pages - 1)
 
         ctx_wrapper.dec_pages()
+        if ctx_wrapper.ttl_expired(self.config.context_ttl) and not ctx_wrapper.draining:
+            await self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper])
+        if ctx_wrapper.draining and ctx_wrapper.active_pages == 0:
+            await self._enqueue_event(
+                _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
+            )
 
         # Discard closed or expired pages
         context_expired = ctx_wrapper.ttl_expired(self.config.context_ttl)
@@ -383,7 +491,7 @@ class PlaywrightPagePool:
     def _select_context_with_capacity(self, contexts: list[ContextWrapper]) -> ContextWrapper | None:
         """Pick the first context with remaining page capacity."""
         for record in contexts:
-            if not record.ttl_expired(self.config.context_ttl) and (
+            if not record.draining and not record.ttl_expired(self.config.context_ttl) and (
                 self.config.max_pages_per_context == 0
                 or record.active_pages < self.config.max_pages_per_context
             ):
@@ -407,14 +515,13 @@ class PlaywrightPagePool:
 
         return True
 
-    async def _create_context(self, endpoint: str, connection: BrowserWrapper, scene: str | None = None) -> ContextWrapper:
+    async def _create_context(self, endpoint: str, connection: BrowserWrapper) -> ContextWrapper:
         """Create and register a new context for an endpoint."""
         browser_wrapper = await connection.connect()
         if browser_wrapper.obj is None:
             raise PageAcquireError("Browser connection did not return an active browser")
-        context_factory = self._resolve_context_factory(scene)
-        if context_factory:
-            context = await context_factory(browser_wrapper.obj)
+        if self.config.context_factory:
+            context = await self.config.context_factory(browser_wrapper.obj)
         else:
             context = await browser_wrapper.obj.new_context()
 
@@ -424,17 +531,6 @@ class PlaywrightPagePool:
         connection.stats.total_contexts += 1
         connection.stats.active_contexts = len(self._endpoint_contexts[endpoint])
         return record
-
-    def _resolve_context_factory(self, scene: str | None) -> Callable[[Browser], Awaitable[BrowserContext]] | None:
-        """Select context factory by scene if mapping is provided."""
-        factory = self.config.context_factory
-        if factory is None:
-            return None
-        if isinstance(factory, dict):
-            if scene is None:
-                return factory.get("default") or next(iter(factory.values()), None)
-            return factory.get(scene)
-        return factory
 
     def _resolve_page_init(self, scene: str | None) -> Callable[[Page], Awaitable[None]] | None:
         """Select page init by scene if mapping is provided."""
@@ -464,6 +560,7 @@ class PlaywrightPagePool:
         connection = self._connections[endpoint]
         contexts = self._endpoint_contexts[endpoint]
 
+        await self._rotate_expired_contexts(endpoint, connection)
         context_with_capacity = self._select_context_with_capacity(contexts)
         if not context_with_capacity:
             if not self._can_create_more_pages(endpoint):
@@ -473,8 +570,7 @@ class PlaywrightPagePool:
             except Exception:
                 return
 
-        if context_with_capacity.ttl_expired(self.config.context_ttl):
-            await self._discard_context(context_with_capacity, endpoint)
+        if context_with_capacity.draining or context_with_capacity.ttl_expired(self.config.context_ttl):
             return
 
         try:
@@ -550,11 +646,53 @@ class PlaywrightPagePool:
                         wrapper = idle_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                    if wrapper.context == ctx_record.obj:
+                    if wrapper.context == ctx_record:
                         await self._discard_page(wrapper.obj)
                     else:
                         await remaining.put(wrapper)
                 self._idle_pages[endpoint] = remaining
+
+    async def _purge_idle_pages_for_context(self, endpoint: str, ctx_record: ContextWrapper) -> None:
+        idle_queue = self._idle_pages.get(endpoint)
+        if not idle_queue:
+            return
+        remaining: asyncio.Queue[PageWrapper] = asyncio.Queue()
+        while not idle_queue.empty():
+            try:
+                wrapper = idle_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if wrapper.context == ctx_record:
+                await self._discard_page(wrapper.obj)
+            else:
+                await remaining.put(wrapper)
+        self._idle_pages[endpoint] = remaining
+
+    async def _rotate_expired_contexts(
+        self,
+        endpoint: str,
+        connection: BrowserWrapper,
+        contexts: list[ContextWrapper] | None = None,
+    ) -> None:
+        if self.config.context_ttl is None:
+            return
+        if endpoint in self._draining_endpoints:
+            return
+        if contexts is None:
+            contexts = list(self._endpoint_contexts.get(endpoint, []))
+        for record in contexts:
+            if record.draining or not record.ttl_expired(self.config.context_ttl):
+                continue
+            try:
+                await self._create_context(endpoint, connection)
+            except Exception:
+                continue
+            record.draining = True
+            await self._purge_idle_pages_for_context(endpoint, record)
+            if record.active_pages == 0:
+                await self._enqueue_event(
+                    _PoolEvent(kind="discard_context", endpoint=endpoint, payload=record)
+                )
 
     async def _enqueue_event(self, event: _PoolEvent) -> None:
         try:
@@ -595,6 +733,7 @@ class PlaywrightPagePool:
             deficit = target - idle_queue.qsize()
             if deficit <= 0:
                 return
+            logging.info("refill %s: deficit=%d", endpoint, deficit)
             for _ in range(deficit):
                 await self._spawn_idle_page(endpoint)
         finally:

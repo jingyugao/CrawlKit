@@ -131,7 +131,7 @@ def random_balancer(stats: Dict[str, ConnectionStats]) -> str:
     """
     healthy = [
         ep for ep, s in stats.items()
-        if s.is_healthy and s.circuit_state != "open"
+        if s.is_healthy and s.circuit_state != "open" 
     ]
 
     if not healthy:

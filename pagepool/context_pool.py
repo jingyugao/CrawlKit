@@ -114,7 +114,7 @@ class ContextPool:
 
     async def start(self):
         """Start background cleanup task."""
-        if self.config.auto_cleanup:
+        if self.config.context_ttl is not None:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def stop(self):
@@ -150,22 +150,21 @@ class ContextPool:
             ContextAcquireError: If unable to acquire a context.
         """
         # Try to get an available context from queue (non-blocking)
-        if self.config.reuse_contexts:
-            try:
-                ctx_wrapper = self._available_contexts.get_nowait()
+        try:
+            ctx_wrapper = self._available_contexts.get_nowait()
 
-                # Check if TTL expired
-                if ctx_wrapper.is_ttl_expired(self.config.context_ttl):
+            # Check if TTL expired
+            if ctx_wrapper.is_ttl_expired(self.config.context_ttl):
+                await self._remove_context(ctx_wrapper)
+            elif ctx_wrapper in self._contexts:
+                try:
+                    return await ctx_wrapper.acquire()
+                except Exception:
+                    # Context became invalid, remove it
                     await self._remove_context(ctx_wrapper)
-                elif ctx_wrapper in self._contexts:
-                    try:
-                        return await ctx_wrapper.acquire()
-                    except Exception:
-                        # Context became invalid, remove it
-                        await self._remove_context(ctx_wrapper)
 
-            except asyncio.QueueEmpty:
-                pass
+        except asyncio.QueueEmpty:
+            pass
 
         # Create new context if under limit
         async with self._lock:
@@ -188,16 +187,12 @@ class ContextPool:
         if not ctx_wrapper:
             return  # Context not managed by this pool
 
-        if self.config.reuse_contexts:
-            # Check if TTL expired before reusing
-            if dispose or ctx_wrapper.is_ttl_expired(self.config.context_ttl):
-                await self._remove_context(ctx_wrapper)
-            else:
-                await ctx_wrapper.release()
-                await self._available_contexts.put(ctx_wrapper)
-        else:
-            # Don't reuse, just close
+        # Check if TTL expired before reusing
+        if dispose or ctx_wrapper.is_ttl_expired(self.config.context_ttl):
             await self._remove_context(ctx_wrapper)
+        else:
+            await ctx_wrapper.release()
+            await self._available_contexts.put(ctx_wrapper)
 
     async def _create_new_context(self) -> BrowserContext:
         """Create a new browser context.
@@ -213,15 +208,8 @@ class ContextPool:
             if browser_wrapper.obj is None:
                 raise ContextAcquireError("Browser connection did not return an active browser")
 
-            # Use custom context factory if provided
             if self.config.context_factory:
-                factory = self.config.context_factory
-                if isinstance(factory, dict):
-                    factory = factory.get("default") or next(iter(factory.values()), None)
-                if factory:
-                    context = await factory(browser_wrapper.obj)
-                else:
-                    context = await browser_wrapper.obj.new_context()
+                context = await self.config.context_factory(browser_wrapper.obj)
             else:
                 context = await browser_wrapper.obj.new_context()
 
@@ -254,7 +242,7 @@ class ContextPool:
                 self.browser_connection.stats.active_contexts = len(self._contexts)
 
     async def _cleanup_loop(self):
-        """Background task to cleanup idle and expired contexts."""
+        """Background task to cleanup expired contexts."""
         while True:
             try:
                 await asyncio.sleep(self.config.health_check_interval)
@@ -265,15 +253,12 @@ class ContextPool:
                 pass  # Continue cleanup loop
 
     async def _cleanup_idle_contexts(self):
-        """Remove contexts that have been idle too long or exceeded TTL."""
+        """Remove contexts that have exceeded TTL."""
         async with self._lock:
             to_remove = []
 
             for ctx_wrapper in self._contexts:
-                if ctx_wrapper.is_available and (
-                    ctx_wrapper.is_idle_timeout(self.config.idle_timeout)
-                    or ctx_wrapper.is_ttl_expired(self.config.context_ttl)
-                ):
+                if ctx_wrapper.is_available and ctx_wrapper.is_ttl_expired(self.config.context_ttl):
                     to_remove.append(ctx_wrapper)
 
             for ctx_wrapper in to_remove:

@@ -19,13 +19,10 @@ class PoolConfig(BaseModel):
         idle_timeout: How long a context can be idle before cleanup (seconds).
         context_ttl: Maximum lifetime of a context (seconds). None means no limit.
         health_check_interval: How often to run health checks (seconds).
-        context_factory: Optional custom function (or mapping of scene -> function) to create browser contexts.
+        context_factory: Optional custom function to create browser contexts.
         load_balancer: Optional custom function to select endpoints for load balancing.
         cdp_connect_opts: Extra kwargs passed to Playwright chromium.connect_over_cdp (headers, slow_mo, timeout, etc.).
         page_init: Optional function (or mapping of scene -> function) to initialize pages before use.
-        reuse_contexts: Whether to reuse contexts across page acquisitions.
-        auto_cleanup: Whether to automatically cleanup idle resources.
-        strict_mode: If True, raise errors on connection failures. If False, retry/continue.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -50,17 +47,12 @@ class PoolConfig(BaseModel):
     health_check_interval: float = 60.0
 
     # Customization
-    context_factory: Callable[[Browser], Awaitable[BrowserContext]] | Dict[str, Callable[[Browser], Awaitable[BrowserContext]]] | None = None
+    context_factory: Callable[[Browser], Awaitable[BrowserContext]] | None = None
     page_init: Callable[[Page], Awaitable[None]] | Dict[str, Callable[[Page], Awaitable[None]]] | None = None
     load_balancer: Callable[[Dict[str, "ConnectionStats"]], str] | None = None
 
     # Connection parameters
     cdp_connect_opts: Dict[str, Any] = Field(default_factory=dict)
-
-    # Behavior flags
-    reuse_contexts: bool = True
-    auto_cleanup: bool = True
-    strict_mode: bool = False
 
 
 class ConnectionStats(BaseModel):
@@ -80,6 +72,13 @@ class ConnectionStats(BaseModel):
     last_error: str | None = None
     error_count: int = 0
     success_count: int = 0
+    stats_cpu_percent: float | None = None
+    stats_mem_total_bytes: int | None = None
+    stats_mem_used_bytes: int | None = None
+    stats_mem_used_percent: float | None = None
+    stats_pages: int | None = None
+    stats_contexts: int | None = None
+    stats_collected_at: str | None = None
 
     @property
     def load_score(self) -> float:
