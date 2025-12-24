@@ -17,7 +17,6 @@ from .load_balancer import (
 from .exceptions import (
     PoolException,
     NoHealthyEndpointsError,
-    AcquireTimeoutError,
     EndpointConnectionError,
     ContextAcquireError,
     PageAcquireError,
@@ -40,7 +39,6 @@ __all__ = [
     # Exceptions
     "PoolException",
     "NoHealthyEndpointsError",
-    "AcquireTimeoutError",
     "EndpointConnectionError",
     "ContextAcquireError",
     "PageAcquireError",

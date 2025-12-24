@@ -27,7 +27,6 @@ class ContextWrapper:
         self.last_used = created_at
         self.page_count = 0
         self.is_available = True
-        self._lock = asyncio.Lock()
 
     async def acquire(self) -> BrowserContext:
         """Mark context as in use.
@@ -38,31 +37,17 @@ class ContextWrapper:
         Raises:
             ContextAcquireError: If context is not available.
         """
-        async with self._lock:
-            if not self.is_available:
-                raise ContextAcquireError("Context is not available")
+        if not self.is_available:
+            raise ContextAcquireError("Context is not available")
 
-            self.is_available = False
-            self.last_used = datetime.now()
-            return self.context
+        self.is_available = False
+        self.last_used = datetime.now()
+        return self.context
 
     async def release(self):
         """Mark context as available for reuse."""
-        async with self._lock:
-            self.is_available = True
-            self.last_used = datetime.now()
-
-    def is_idle_timeout(self, timeout_seconds: float) -> bool:
-        """Check if context has been idle too long.
-
-        Args:
-            timeout_seconds: Idle timeout in seconds.
-
-        Returns:
-            True if context has been idle longer than timeout.
-        """
-        idle_time = (datetime.now() - self.last_used).total_seconds()
-        return idle_time > timeout_seconds
+        self.is_available = True
+        self.last_used = datetime.now()
 
     def is_ttl_expired(self, ttl_seconds: float | None) -> bool:
         """Check if context has exceeded its TTL.

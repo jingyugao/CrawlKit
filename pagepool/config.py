@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Any, Dict, Awaitable
 
-from playwright.async_api import Browser, BrowserContext, Page
+from playwright.async_api import Browser, BrowserContext, Page, Playwright
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -16,13 +16,13 @@ class PoolConfig(BaseModel):
                       Supports static list, sync function, or async function.
         max_pages_per_context: Maximum pages per context (soft cap).
         connection_timeout: Timeout for establishing CDP connection (seconds).
-        idle_timeout: How long a context can be idle before cleanup (seconds).
         context_ttl: Maximum lifetime of a context (seconds). None means no limit.
         health_check_interval: How often to run health checks (seconds).
         context_factory: Optional custom function to create browser contexts.
         load_balancer: Optional custom function to select endpoints for load balancing.
         cdp_connect_opts: Extra kwargs passed to Playwright chromium.connect_over_cdp (headers, slow_mo, timeout, etc.).
         page_init: Optional function (or mapping of scene -> function) to initialize pages before use.
+        playwright: Required Playwright instance provided by caller for shared lifecycle.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -38,7 +38,6 @@ class PoolConfig(BaseModel):
 
     # Timeouts
     connection_timeout: float = 30.0
-    idle_timeout: float = 300.0  # 5 minutes
 
     # TTL management
     context_ttl: float | None = None
@@ -50,6 +49,7 @@ class PoolConfig(BaseModel):
     context_factory: Callable[[Browser], Awaitable[BrowserContext]] | None = None
     page_init: Callable[[Page], Awaitable[None]] | Dict[str, Callable[[Page], Awaitable[None]]] | None = None
     load_balancer: Callable[[Dict[str, "ConnectionStats"]], str] | None = None
+    playwright: Playwright
 
     # Connection parameters
     cdp_connect_opts: Dict[str, Any] = Field(default_factory=dict)

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 
+from playwright.async_api import async_playwright
 from pagepool import PlaywrightPagePool, PoolConfig
 
 
@@ -14,22 +15,24 @@ async def run_scenario(pool: PlaywrightPagePool, name: str, url: str) -> None:
 
 
 async def main_async(cdp: str) -> None:
-    config = PoolConfig(
-        cdp_endpoints=[cdp],
-        min_active_page=3,
-        max_idle_pages=3,
-    )
-    pool = PlaywrightPagePool(config)
-    await pool.start()
-    try:
-        scenarios = [
-            ("example", "https://example.com"),
-            ("python", "https://www.python.org"),
-            ("wikipedia", "https://www.wikipedia.org"),
-        ]
-        await asyncio.gather(*(run_scenario(pool, name, url) for name, url in scenarios))
-    finally:
-        await pool.stop()
+    async with async_playwright() as playwright:
+        config = PoolConfig(
+            cdp_endpoints=[cdp],
+            min_active_page=3,
+            max_idle_pages=3,
+            playwright=playwright,
+        )
+        pool = PlaywrightPagePool(config)
+        await pool.start()
+        try:
+            scenarios = [
+                ("example", "https://example.com"),
+                ("python", "https://www.python.org"),
+                ("wikipedia", "https://www.wikipedia.org"),
+            ]
+            await asyncio.gather(*(run_scenario(pool, name, url) for name, url in scenarios))
+        finally:
+            await pool.stop()
 
 
 def main() -> int:

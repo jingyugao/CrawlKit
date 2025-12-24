@@ -13,7 +13,6 @@ from urllib.request import urlopen
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from playwright.async_api import (
-    async_playwright,
     Playwright,
     BrowserContext,
     Page,
@@ -53,6 +52,7 @@ class PlaywrightPagePool:
         self.config = config
 
         self._playwright: Playwright | None = None
+        self._owns_playwright = False
         self._connections: Dict[str, BrowserWrapper] = {}
         self._endpoint_contexts: Dict[str, list[ContextWrapper]] = {}
         self._idle_pages: Dict[str, asyncio.Queue[PageWrapper]] = {}
@@ -73,7 +73,8 @@ class PlaywrightPagePool:
                 return
 
             # Start Playwright
-            self._playwright = await async_playwright().start()
+            self._playwright = self.config.playwright
+            self._owns_playwright = False
 
             # Initialize endpoint list
             await self._refresh_endpoints()
@@ -107,8 +108,10 @@ class PlaywrightPagePool:
                 await self._cleanup_endpoint(endpoint)
 
             # Stop Playwright
-            if self._playwright:
+            if self._playwright and self._owns_playwright:
                 await self._playwright.stop()
+            self._playwright = None
+            self._owns_playwright = False
 
             self._started = False
 
@@ -122,7 +125,9 @@ class PlaywrightPagePool:
         # Add new endpoints
         new_endpoints = current_endpoints_set - existing_endpoints_set
         for endpoint in new_endpoints:
-            assert self._playwright is not None, "Playwright instance should be initialized before refreshing endpoints"
+            assert (
+                self._playwright is not None
+            ), "Playwright instance should be initialized before refreshing endpoints"
             wrapper = BrowserWrapper(
                 endpoint=endpoint,
                 playwright=self._playwright,
@@ -133,7 +138,7 @@ class PlaywrightPagePool:
             self._connections[endpoint] = wrapper
             self._endpoint_contexts[endpoint] = []
             self._idle_pages[endpoint] = asyncio.Queue()
-            self._schedule_spawn_pages(endpoint)
+            self._try_fill_page(endpoint)
 
         # Remove deleted endpoints
         removed_endpoints = existing_endpoints_set - current_endpoints_set
@@ -149,10 +154,7 @@ class PlaywrightPagePool:
                 connection.stats.is_healthy = True
 
         # Update load balancer with current endpoints
-        self._load_balancer = LoadBalancer(
-            list(current_endpoints),
-            self.config.load_balancer
-        )
+        self._load_balancer = LoadBalancer(list(current_endpoints), self.config.load_balancer)
 
     async def acquire_page(self, scene: str | None = None) -> PageWrapper:
         """Acquire a page from the pool.
@@ -249,10 +251,7 @@ class PlaywrightPagePool:
         Returns:
             Dictionary mapping endpoint URLs to ConnectionStats.
         """
-        return {
-            endpoint: connection.stats
-            for endpoint, connection in self._connections.items()
-        }
+        return {endpoint: connection.stats for endpoint, connection in self._connections.items()}
 
     def get_health(self) -> Dict[str, bool]:
         """Get health status for all endpoints.
@@ -261,8 +260,7 @@ class PlaywrightPagePool:
             Dictionary mapping endpoint URLs to health status.
         """
         return {
-            endpoint: connection.is_healthy
-            for endpoint, connection in self._connections.items()
+            endpoint: connection.is_healthy for endpoint, connection in self._connections.items()
         }
 
     def __repr__(self) -> str:
@@ -302,7 +300,7 @@ class PlaywrightPagePool:
                 await self._refill_pending_pages(endpoint)
                 await asyncio.sleep(0.1)
             if idle_queue.qsize() < target:
-                logging.warning(
+                logging.debug(
                     "warmup incomplete for %s: idle=%d target=%d",
                     endpoint,
                     idle_queue.qsize(),
@@ -389,13 +387,9 @@ class PlaywrightPagePool:
 
         # 1) Try reusing a warm idle page (not previously used by a client).
         page_wrapper = await self._pop_usable_idle_page(idle_queue, endpoint, connection)
+        self._try_fill_page(endpoint)
         if page_wrapper:
-            self._schedule_spawn_pages(endpoint)
             return page_wrapper
-
-        # 2) Ensure background refill is scheduled, then fail fast.
-        if self._can_create_more_pages(endpoint):
-            self._schedule_spawn_pages(endpoint)
         raise PageAcquireError("No idle pages available; background refill scheduled")
 
     async def _pop_usable_idle_page(
@@ -411,21 +405,21 @@ class PlaywrightPagePool:
             except asyncio.QueueEmpty:
                 break
 
-            ctx_wrapper = page_wrapper.context
-
-            if self._activate_idle_page(page_wrapper, endpoint, connection, mutate_stats=False):
+            if await self._check_page(
+                page_wrapper, endpoint, connection, mutate_stats=False
+            ):
                 return page_wrapper
 
         return None
 
-    async def _activate_idle_page(
+    async def _check_page(
         self,
         page_wrapper: PageWrapper,
         endpoint: str,
         connection: BrowserWrapper,
         mutate_stats: bool = True,
     ) -> PageWrapper | None:
-        """Validate and mark an idle page as in-use."""
+        """Validate an idle page and mark it as in-use."""
         ctx_wrapper = page_wrapper.context
         if ctx_wrapper.ttl_expired(self.config.context_ttl) and not ctx_wrapper.draining:
             await self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper])
@@ -435,7 +429,9 @@ class PlaywrightPagePool:
             or ctx_wrapper.ttl_expired(self.config.context_ttl)
         ):
             await self._enqueue_event(_PoolEvent(kind="discard_page", payload=page_wrapper.obj))
-            if ctx_wrapper.active_pages == 0 and (ctx_wrapper.draining or ctx_wrapper.ttl_expired(self.config.context_ttl)):
+            if ctx_wrapper.active_pages == 0 and (
+                ctx_wrapper.draining or ctx_wrapper.ttl_expired(self.config.context_ttl)
+            ):
                 await self._enqueue_event(
                     _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
                 )
@@ -486,14 +482,20 @@ class PlaywrightPagePool:
             await self._enqueue_event(
                 _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
             )
-        self._schedule_spawn_pages(endpoint)
+        self._try_fill_page(endpoint)
 
-    def _select_context_with_capacity(self, contexts: list[ContextWrapper]) -> ContextWrapper | None:
+    def _select_context_with_capacity(
+        self, contexts: list[ContextWrapper]
+    ) -> ContextWrapper | None:
         """Pick the first context with remaining page capacity."""
         for record in contexts:
-            if not record.draining and not record.ttl_expired(self.config.context_ttl) and (
-                self.config.max_pages_per_context == 0
-                or record.active_pages < self.config.max_pages_per_context
+            if (
+                not record.draining
+                and not record.ttl_expired(self.config.context_ttl)
+                and (
+                    self.config.max_pages_per_context == 0
+                    or record.active_pages < self.config.max_pages_per_context
+                )
             ):
                 return record
         return None
@@ -510,20 +512,32 @@ class PlaywrightPagePool:
             return False
 
         idle_queue = self._idle_pages.get(endpoint)
-        if self.config.max_idle_pages and idle_queue and idle_queue.qsize() >= self.config.max_idle_pages:
+        if (
+            self.config.max_idle_pages
+            and idle_queue
+            and idle_queue.qsize() >= self.config.max_idle_pages
+        ):
             return False
 
         return True
 
     async def _create_context(self, endpoint: str, connection: BrowserWrapper) -> ContextWrapper:
         """Create and register a new context for an endpoint."""
-        browser_wrapper = await connection.connect()
+        try:
+            browser_wrapper = await connection.connect()
+        except Exception as exc:
+            logging.warning("connect failed for %s: %s", endpoint, exc)
+            raise
         if browser_wrapper.obj is None:
             raise PageAcquireError("Browser connection did not return an active browser")
-        if self.config.context_factory:
-            context = await self.config.context_factory(browser_wrapper.obj)
-        else:
-            context = await browser_wrapper.obj.new_context()
+        try:
+            if self.config.context_factory:
+                context = await self.config.context_factory(browser_wrapper.obj)
+            else:
+                context = await browser_wrapper.obj.new_context()
+        except Exception as exc:
+            logging.warning("create context failed for %s: %s", endpoint, exc)
+            raise
 
         record = ContextWrapper(obj=context, endpoint=endpoint, created_at=datetime.now())
         self._endpoint_contexts[endpoint].append(record)
@@ -567,20 +581,25 @@ class PlaywrightPagePool:
                 return
             try:
                 context_with_capacity = await self._create_context(endpoint, connection)
-            except Exception:
+            except Exception as exc:
+                logging.warning("spawn: create context failed for %s: %s", endpoint, exc)
                 return
 
-        if context_with_capacity.draining or context_with_capacity.ttl_expired(self.config.context_ttl):
+        if context_with_capacity.draining or context_with_capacity.ttl_expired(
+            self.config.context_ttl
+        ):
             return
 
         try:
             page = await context_with_capacity.obj.new_page()
-        except Exception:
+        except Exception as exc:
+            logging.warning("spawn: new page failed for %s: %s", endpoint, exc)
             return
 
         try:
             await self._apply_page_init(page, None)
-        except Exception:
+        except Exception as exc:
+            logging.warning("spawn: page init failed for %s: %s", endpoint, exc)
             await self._discard_page(page)
             return
 
@@ -617,6 +636,18 @@ class PlaywrightPagePool:
             self._refill_pending.discard(endpoint)
             logging.warning("pool event queue full: refill")
 
+    def _try_fill_page(self, endpoint: str) -> None:
+        """Try scheduling a refill when it makes sense for the endpoint."""
+        if self.config.min_active_page <= 0:
+            return
+        if endpoint in self._draining_endpoints:
+            return
+        if endpoint not in self._connections:
+            return
+        if not self._can_create_more_pages(endpoint):
+            return
+        self._schedule_spawn_pages(endpoint)
+
     async def _discard_page(self, page: Page):
         """Close a page quietly."""
         try:
@@ -652,7 +683,9 @@ class PlaywrightPagePool:
                         await remaining.put(wrapper)
                 self._idle_pages[endpoint] = remaining
 
-    async def _purge_idle_pages_for_context(self, endpoint: str, ctx_record: ContextWrapper) -> None:
+    async def _purge_idle_pages_for_context(
+        self, endpoint: str, ctx_record: ContextWrapper
+    ) -> None:
         idle_queue = self._idle_pages.get(endpoint)
         if not idle_queue:
             return
@@ -763,7 +796,9 @@ class PlaywrightPagePool:
                     break
                 await self._discard_page(wrapper.obj)
 
-    def _find_context_record(self, context: BrowserContext | ContextWrapper) -> Tuple[str | None, ContextWrapper | None]:
+    def _find_context_record(
+        self, context: BrowserContext | ContextWrapper
+    ) -> Tuple[str | None, ContextWrapper | None]:
         """Find the endpoint and context record for the given context."""
         if isinstance(context, ContextWrapper):
             return context.endpoint, context
