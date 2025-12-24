@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Dict, Tuple, cast, Callable, Awaitable
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
-from contextlib import asynccontextmanager
+from contextlib import contextmanager
 from playwright.async_api import (
     Playwright,
     BrowserContext,
@@ -139,7 +139,7 @@ class PlaywrightPagePool:
         # Update load balancer with current endpoints
         self._load_balancer = LoadBalancer(list(current_endpoints), self.config.load_balancer)
 
-    async def acquire_page(self, scene: str | None = None) -> PageWrapper:
+    def acquire_page(self, scene: str | None = None) -> PageWrapper:
         """Acquire a page from the pool.
 
         This method:
@@ -178,7 +178,7 @@ class PlaywrightPagePool:
 
             connection = self._connections[endpoint]
             try:
-                page_wrapper = await self._acquire_page_for_endpoint(endpoint, connection, scene)
+                page_wrapper = self._acquire_page_for_endpoint(endpoint, connection, scene)
                 page_wrapper._releaser = self.release_page
                 return page_wrapper
             except PageAcquireError as exc:
@@ -200,7 +200,7 @@ class PlaywrightPagePool:
             raise PageAcquireError(f"Failed to acquire page: {last_error}") from last_error
         raise PageAcquireError("Failed to acquire page: no available endpoints")
 
-    async def release_page(self, page_wrapper: PageWrapper):
+    async def release_page(self, page_wrapper: PageWrapper) -> None:
         """Release a page back to the pool.
 
         Args:
@@ -211,22 +211,22 @@ class PlaywrightPagePool:
         page_wrapper.mark_released()
         await self._release_page_to_endpoint(page_wrapper)
 
-    @asynccontextmanager
-    async def page(self):
+    @contextmanager
+    def page(self):
         """Context manager for acquiring and releasing pages.
 
         Yields:
             Page instance.
 
         Example:
-            >>> async with pool.page() as page:
+            >>> with pool.page() as page:
             ...     await page.goto('https://example.com')
         """
-        page_wrapper = await self.acquire_page()
+        page_wrapper = self.acquire_page()
         try:
             yield page_wrapper.page
         finally:
-            await page_wrapper.release()
+            asyncio.create_task(self.release_page(page_wrapper))
 
     def get_stats(self) -> Dict[str, ConnectionStats]:
         """Get current statistics for all endpoints.
@@ -371,7 +371,7 @@ class PlaywrightPagePool:
         except json.JSONDecodeError:
             return None
 
-    async def _acquire_page_for_endpoint(
+    def _acquire_page_for_endpoint(
         self,
         endpoint: str,
         connection: BrowserWrapper,
@@ -381,13 +381,13 @@ class PlaywrightPagePool:
         idle_queue = self._idle_pages[endpoint]
 
         # 1) Try reusing a warm idle page (not previously used by a client).
-        page_wrapper = await self._pop_usable_idle_page(idle_queue, endpoint, connection)
+        page_wrapper = self._pop_usable_idle_page(idle_queue, endpoint, connection)
         self._try_fill_page(endpoint)
         if page_wrapper:
             return page_wrapper
         raise PageAcquireError("No idle pages available; background refill scheduled")
 
-    async def _pop_usable_idle_page(
+    def _pop_usable_idle_page(
         self,
         idle_queue: asyncio.Queue[PageWrapper],
         endpoint: str,
@@ -400,14 +400,12 @@ class PlaywrightPagePool:
             except asyncio.QueueEmpty:
                 break
 
-            if await self._check_page(
-                page_wrapper, endpoint, connection, mutate_stats=False
-            ):
+            if self._check_page(page_wrapper, endpoint, connection, mutate_stats=False):
                 return page_wrapper
 
         return None
 
-    async def _check_page(
+    def _check_page(
         self,
         page_wrapper: PageWrapper,
         endpoint: str,
@@ -417,7 +415,7 @@ class PlaywrightPagePool:
         """Validate an idle page and mark it as in-use."""
         ctx_wrapper = page_wrapper.context
         if ctx_wrapper.ttl_expired(self.config.context_ttl) and not ctx_wrapper.draining:
-            await self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper])
+            self._run_background(self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper]))
         if (
             page_wrapper.obj.is_closed()
             or ctx_wrapper.draining
@@ -446,7 +444,7 @@ class PlaywrightPagePool:
 
         ctx_wrapper.dec_pages()
         if ctx_wrapper.ttl_expired(self.config.context_ttl) and not ctx_wrapper.draining:
-            await self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper])
+            self._run_background(self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper]))
         if ctx_wrapper.draining and ctx_wrapper.active_pages == 0:
             self._run_background(self._discard_context(ctx_wrapper, endpoint))
 
@@ -561,7 +559,7 @@ class PlaywrightPagePool:
         connection = self._connections[endpoint]
         contexts = self._endpoint_contexts[endpoint]
 
-        await self._rotate_expired_contexts(endpoint, connection)
+        self._run_background(self._rotate_expired_contexts(endpoint, connection))
         context_with_capacity = self._select_context_with_capacity(contexts)
         if not context_with_capacity:
             if not self._can_create_more_pages(endpoint):

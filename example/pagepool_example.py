@@ -6,7 +6,7 @@ from pagepool import PlaywrightPagePool, PoolConfig
 
 
 async def run_scenario(pool: PlaywrightPagePool, name: str, url: str) -> None:
-    async with pool.page() as page:
+    with pool.page() as page:
         await page.goto(url, wait_until="domcontentloaded")
         title = await page.title()
         content = await page.content()
