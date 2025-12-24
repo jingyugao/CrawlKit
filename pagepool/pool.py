@@ -10,7 +10,6 @@ from datetime import datetime
 from typing import Dict, Tuple, cast, Callable, Awaitable
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
-from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from playwright.async_api import (
     Playwright,
@@ -22,14 +21,6 @@ from .config import PoolConfig, ConnectionStats
 from .wrappers import BrowserWrapper, ContextWrapper, PageWrapper
 from .load_balancer import LoadBalancer
 from .exceptions import PageAcquireError, NoHealthyEndpointsError
-
-
-@dataclass(frozen=True)
-class _PoolEvent:
-    kind: str
-    endpoint: str | None = None
-    payload: object | None = None
-    scene: str | None = None
 
 
 class PlaywrightPagePool:
@@ -58,10 +49,8 @@ class PlaywrightPagePool:
         self._idle_pages: Dict[str, asyncio.Queue[PageWrapper]] = {}
         self._load_balancer: LoadBalancer | None = None
         self._draining_endpoints: set[str] = set()
-        self._event_queue: asyncio.Queue["_PoolEvent"] = asyncio.Queue()
-        self._worker_task: asyncio.Task | None = None
         self._refill_pending: set[str] = set()
-        self._stats_task: asyncio.Task | None = None
+        self._monitor_task: asyncio.Task | None = None
 
         self._started = False
         self._lock = asyncio.Lock()
@@ -79,9 +68,7 @@ class PlaywrightPagePool:
             # Initialize endpoint list
             await self._refresh_endpoints()
 
-            # Start worker loop
-            self._worker_task = asyncio.create_task(self._worker_loop())
-            self._stats_task = asyncio.create_task(self._stats_loop())
+            self._monitor_task = asyncio.create_task(self._monitor_loop())
             await self._warmup_idle_pages()
 
             self._started = True
@@ -91,17 +78,13 @@ class PlaywrightPagePool:
         async with self._lock:
             if not self._started:
                 return
-            await self._enqueue_event(_PoolEvent(kind="stop"))
-            if self._worker_task:
-                await self._worker_task
-                self._worker_task = None
-            if self._stats_task:
-                self._stats_task.cancel()
+            if self._monitor_task:
+                self._monitor_task.cancel()
                 try:
-                    await self._stats_task
+                    await self._monitor_task
                 except asyncio.CancelledError:
                     pass
-                self._stats_task = None
+                self._monitor_task = None
 
             # Cleanup endpoint resources
             for endpoint in list(self._connections.keys()):
@@ -309,10 +292,22 @@ class PlaywrightPagePool:
             else:
                 logging.info("warmup complete %s: idle=%d", endpoint, idle_queue.qsize())
 
-    async def _stats_loop(self) -> None:
+    async def _monitor_loop(self) -> None:
         while True:
             await asyncio.sleep(1)
+            await self._refresh_endpoints()
             await self._refresh_connection_stats()
+
+    def _run_background(self, coro: Awaitable[None]) -> None:
+        task = asyncio.create_task(coro)
+
+        def _done_callback(done: asyncio.Task) -> None:
+            try:
+                done.result()
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("background task error: %s", exc)
+
+        task.add_done_callback(_done_callback)
 
     async def _refresh_connection_stats(self) -> None:
         if not self._connections:
@@ -428,13 +423,11 @@ class PlaywrightPagePool:
             or ctx_wrapper.draining
             or ctx_wrapper.ttl_expired(self.config.context_ttl)
         ):
-            await self._enqueue_event(_PoolEvent(kind="discard_page", payload=page_wrapper.obj))
+            self._run_background(self._discard_page(page_wrapper.obj))
             if ctx_wrapper.active_pages == 0 and (
                 ctx_wrapper.draining or ctx_wrapper.ttl_expired(self.config.context_ttl)
             ):
-                await self._enqueue_event(
-                    _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
-                )
+                self._run_background(self._discard_context(ctx_wrapper, endpoint))
             return None
 
         ctx_wrapper.inc_pages()
@@ -455,33 +448,27 @@ class PlaywrightPagePool:
         if ctx_wrapper.ttl_expired(self.config.context_ttl) and not ctx_wrapper.draining:
             await self._rotate_expired_contexts(endpoint, connection, [ctx_wrapper])
         if ctx_wrapper.draining and ctx_wrapper.active_pages == 0:
-            await self._enqueue_event(
-                _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
-            )
+            self._run_background(self._discard_context(ctx_wrapper, endpoint))
 
         # Discard closed or expired pages
         context_expired = ctx_wrapper.ttl_expired(self.config.context_ttl)
         if page_wrapper.obj.is_closed() or context_expired:
-            await self._enqueue_event(_PoolEvent(kind="discard_page", payload=page_wrapper.obj))
+            self._run_background(self._discard_page(page_wrapper.obj))
             if context_expired and ctx_wrapper.active_pages == 0:
-                await self._enqueue_event(
-                    _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
-                )
+                self._run_background(self._discard_context(ctx_wrapper, endpoint))
             return
 
         # If endpoint is draining, discard and finalize cleanup when empty
         if endpoint in self._draining_endpoints:
-            await self._enqueue_event(_PoolEvent(kind="discard_page", payload=page_wrapper.obj))
+            self._run_background(self._discard_page(page_wrapper.obj))
             if connection.stats.active_pages == 0:
-                await self._enqueue_event(_PoolEvent(kind="cleanup_endpoint", endpoint=endpoint))
+                self._run_background(self._cleanup_endpoint(endpoint))
             return
 
         # No page reuse; discard after use and refill idle queue if needed.
-        await self._enqueue_event(_PoolEvent(kind="discard_page", payload=page_wrapper.obj))
+        self._run_background(self._discard_page(page_wrapper.obj))
         if context_expired and ctx_wrapper.active_pages == 0:
-            await self._enqueue_event(
-                _PoolEvent(kind="discard_context", endpoint=endpoint, payload=ctx_wrapper)
-            )
+            self._run_background(self._discard_context(ctx_wrapper, endpoint))
         self._try_fill_page(endpoint)
 
     def _select_context_with_capacity(
@@ -630,11 +617,7 @@ class PlaywrightPagePool:
         if endpoint in self._refill_pending:
             return
         self._refill_pending.add(endpoint)
-        try:
-            self._event_queue.put_nowait(_PoolEvent(kind="refill", endpoint=endpoint))
-        except asyncio.QueueFull:
-            self._refill_pending.discard(endpoint)
-            logging.warning("pool event queue full: refill")
+        self._run_background(self._refill_pending_pages(endpoint))
 
     def _try_fill_page(self, endpoint: str) -> None:
         """Try scheduling a refill when it makes sense for the endpoint."""
@@ -723,37 +706,7 @@ class PlaywrightPagePool:
             record.draining = True
             await self._purge_idle_pages_for_context(endpoint, record)
             if record.active_pages == 0:
-                await self._enqueue_event(
-                    _PoolEvent(kind="discard_context", endpoint=endpoint, payload=record)
-                )
-
-    async def _enqueue_event(self, event: _PoolEvent) -> None:
-        try:
-            self._event_queue.put_nowait(event)
-        except asyncio.QueueFull:
-            logging.warning("pool event queue full: %s", event.kind)
-
-    async def _worker_loop(self) -> None:
-        while True:
-            event = await self._event_queue.get()
-            if event.kind == "stop":
-                break
-            if event.kind == "refill":
-                if event.endpoint:
-                    await self._refill_pending_pages(event.endpoint)
-                continue
-            if event.kind == "discard_page" and event.payload:
-                await self._discard_page(cast(Page, event.payload))
-                continue
-            if event.kind == "discard_context" and event.payload and event.endpoint:
-                await self._discard_context(cast(ContextWrapper, event.payload), event.endpoint)
-                continue
-            if event.kind == "cleanup_endpoint" and event.endpoint:
-                await self._cleanup_endpoint(event.endpoint)
-                continue
-            if event.kind == "disconnect" and event.endpoint:
-                await self._handle_disconnect_event(event.endpoint)
-                continue
+                self._run_background(self._discard_context(record, endpoint))
 
     async def _refill_pending_pages(self, endpoint: str) -> None:
         try:
@@ -833,7 +786,7 @@ class PlaywrightPagePool:
 
     async def _handle_endpoint_disconnect(self, endpoint: str) -> None:
         """Mark endpoint unhealthy and clear cached contexts/pages on disconnect."""
-        await self._enqueue_event(_PoolEvent(kind="disconnect", endpoint=endpoint))
+        self._run_background(self._handle_disconnect_event(endpoint))
 
     async def _drain_or_cleanup_endpoint(self, endpoint: str) -> None:
         connection = self._connections.get(endpoint)
@@ -850,4 +803,4 @@ class PlaywrightPagePool:
             connection.stats.circuit_state = "open"
             connection.stats.last_error = "draining"
             return
-        await self._enqueue_event(_PoolEvent(kind="cleanup_endpoint", endpoint=endpoint))
+        self._run_background(self._cleanup_endpoint(endpoint))
