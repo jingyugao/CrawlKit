@@ -289,10 +289,18 @@ class PagePool:
             ContextWrapper for the new context
         """
         # Call user-provided factory
+        result: BrowserContext | Awaitable[BrowserContext]
         if asyncio.iscoroutinefunction(self.new_context_func):
-            context = await self.new_context_func()
+            result = await self.new_context_func()
         else:
-            context = self.new_context_func()
+            result = self.new_context_func()
+
+        # Handle case where sync function returns Awaitable
+        context: BrowserContext
+        if asyncio.iscoroutine(result):
+            context = await result  # type: ignore
+        else:
+            context = result  # type: ignore
 
         # Wrap
         ctx_wrapper = ContextWrapper(
@@ -529,10 +537,16 @@ class PagePool:
         try:
             if self.health_check:
                 # User provided custom health check
+                result: bool | Awaitable[bool]
                 if asyncio.iscoroutinefunction(self.health_check):
-                    return await self.health_check(page_wrapper)
+                    result = await self.health_check(page_wrapper)
                 else:
-                    return self.health_check(page_wrapper)
+                    result = self.health_check(page_wrapper)
+
+                # Handle case where sync function returns Awaitable
+                if asyncio.iscoroutine(result):
+                    return await result  # type: ignore
+                return bool(result)
             else:
                 # Use default
                 return await self._default_health_check(page_wrapper)

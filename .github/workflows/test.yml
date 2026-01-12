@@ -1,0 +1,128 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, master, develop, addstats ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install ruff mypy
+
+      - name: Run ruff
+        run: |
+          ruff check pagepool/ --select E,F,W --ignore E501
+        continue-on-error: true
+
+      - name: Run mypy
+        run: |
+          mypy pagepool/ --ignore-missing-imports
+        continue-on-error: true
+
+  test-mock:
+    name: Mock Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Run mock tests
+        run: |
+          python -m pytest tests/test_pagepool_simple.py -v --tb=short --cov=pagepool --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  test-integration:
+    name: Integration Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio playwright
+
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install chromium --with-deps
+
+      - name: Run integration tests
+        run: |
+          python -m pytest tests/test_pagepool.py -v --tb=short
+        continue-on-error: true  # Integration tests might fail due to system deps
+
+  test-demo:
+    name: Demo Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio
+
+      - name: Run demo
+        run: |
+          python tests/test_pagepool_simple.py
+
+      - name: Verify demo output
+        run: |
+          OUTPUT=$(python tests/test_pagepool_simple.py 2>&1)
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -q "Demo completed successfully"; then
+            echo "✓ Demo ran successfully"
+            exit 0
+          else
+            echo "✗ Demo failed"
+            exit 1
+          fi
