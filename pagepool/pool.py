@@ -198,11 +198,11 @@ class PagePool:
 
         page_wrapper.mark_released()
         ctx = page_wrapper.context
-        ctx.dec_pages()
 
         # Check if context is draining
         if ctx.draining:
             logger.debug("Discarding page from draining context")
+            ctx.dec_pages()
             await self._discard_page(page_wrapper.obj)
             if ctx.active_pages == 0:
                 await self._destroy_context(ctx)
@@ -211,21 +211,25 @@ class PagePool:
         # Check if page closed or max uses exceeded
         if page_wrapper.obj.is_closed() or page_wrapper.is_max_uses_exceeded(self.max_page_uses):
             logger.debug("Discarding page (closed or max uses exceeded)")
+            ctx.dec_pages()
             await self._discard_page(page_wrapper.obj)
             return
 
         # Check if context TTL expired
         if ctx.ttl_expired(self.context_ttl):
             logger.debug("Discarding page from expired context")
+            ctx.dec_pages()
             await self._discard_page(page_wrapper.obj)
             if ctx.active_pages == 0:
                 await self._destroy_context(ctx)
             return
 
-        # Check total pages limit
+        # Check total pages limit BEFORE decrementing
+        # (we want to check if we're at limit including this page)
         total = self.idle_pages.qsize() + sum(c.active_pages for c in self.contexts)
         if total >= self.max_total_pages:
             logger.debug(f"Discarding page (total limit reached: {total}/{self.max_total_pages})")
+            ctx.dec_pages()
             await self._discard_page(page_wrapper.obj)
             return
 
@@ -235,8 +239,12 @@ class PagePool:
                 f"Discarding page (idle limit reached: "
                 f"{self.idle_pages.qsize()}/{self.max_idle_pages})"
             )
+            ctx.dec_pages()
             await self._discard_page(page_wrapper.obj)
             return
+
+        # Now decrement since we're keeping the page
+        ctx.dec_pages()
 
         # Clear page and return to pool
         cleared = await self._clear_page(page_wrapper.obj)
@@ -433,6 +441,12 @@ class PagePool:
                 if not self._started:
                     break
                 if self.idle_pages.qsize() >= target:
+                    break
+
+                # Re-check total pages limit before creating each page
+                total = self.idle_pages.qsize() + sum(c.active_pages for c in self.contexts)
+                if total >= self.max_total_pages:
+                    logger.debug(f"Refill stopped: total limit reached ({total}/{self.max_total_pages})")
                     break
 
                 await self._create_idle_page()
