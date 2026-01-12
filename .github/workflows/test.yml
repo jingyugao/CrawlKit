@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ruff mypy
+          pip install ruff mypy playwright
 
       - name: Run ruff
         run: |
@@ -51,7 +51,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov
+          pip install pytest pytest-asyncio pytest-cov playwright
 
       - name: Run mock tests
         run: |
