@@ -28,6 +28,8 @@ type statsSnapshot struct {
 	MemTotal     uint64    `json:"mem_total_bytes"`
 	MemUsed      uint64    `json:"mem_used_bytes"`
 	MemPercent   float64   `json:"mem_used_percent"`
+	Pages        int       `json:"pages"`
+	Contexts     int       `json:"contexts"`
 	CollectedAt  time.Time `json:"collected_at"`
 	SamplePeriod string    `json:"sample_period"`
 }
@@ -201,7 +203,7 @@ func isWebsocketRequest(r *http.Request) bool {
 	return strings.Contains(strings.ToLower(connection), "upgrade")
 }
 
-func startStatsSampler(ctx context.Context, store *statsStore, interval time.Duration) {
+func startStatsSampler(ctx context.Context, store *statsStore, interval time.Duration, upstreamURL *url.URL) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -209,16 +211,22 @@ func startStatsSampler(ctx context.Context, store *statsStore, interval time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			store.set(collectStats(interval))
+			store.set(collectStats(interval, upstreamURL))
 		}
 	}
 }
 
-func collectStats(interval time.Duration) statsSnapshot {
+type targetInfo struct {
+	BrowserContextID string `json:"browserContextId"`
+}
+
+func collectStats(interval time.Duration, upstreamURL *url.URL) statsSnapshot {
 	cpuPercent := 0.0
 	memTotal := uint64(0)
 	memUsed := uint64(0)
 	memPercent := 0.0
+	pages := 0
+	contexts := 0
 
 	if percents, err := cpu.Percent(0, false); err == nil && len(percents) > 0 {
 		cpuPercent = percents[0]
@@ -228,15 +236,59 @@ func collectStats(interval time.Duration) statsSnapshot {
 		memUsed = memInfo.Used
 		memPercent = memInfo.UsedPercent
 	}
+	if p, c, ok := collectTargetStats(upstreamURL); ok {
+		pages = p
+		contexts = c
+	}
 
 	return statsSnapshot{
 		CPUPercent:   cpuPercent,
 		MemTotal:     memTotal,
 		MemUsed:      memUsed,
 		MemPercent:   memPercent,
+		Pages:        pages,
+		Contexts:     contexts,
 		CollectedAt:  time.Now().UTC(),
 		SamplePeriod: interval.String(),
 	}
+}
+
+func collectTargetStats(upstreamURL *url.URL) (int, int, bool) {
+	if upstreamURL == nil {
+		return 0, 0, false
+	}
+	targetURL := *upstreamURL
+	targetURL.Path = "/json/list"
+	req, err := http.NewRequest(http.MethodGet, targetURL.String(), nil)
+	if err != nil {
+		return 0, 0, false
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return 0, 0, false
+	}
+
+	var targets []targetInfo
+	if err := json.NewDecoder(resp.Body).Decode(&targets); err != nil {
+		return 0, 0, false
+	}
+	pages := len(targets)
+	contextSet := make(map[string]struct{})
+	for _, target := range targets {
+		if target.BrowserContextID != "" {
+			contextSet[target.BrowserContextID] = struct{}{}
+		}
+	}
+	contexts := len(contextSet)
+	if contexts == 0 && pages > 0 {
+		contexts = 1
+	}
+	return pages, contexts, true
 }
 
 func main() {
@@ -252,12 +304,12 @@ func main() {
 	}
 
 	stats := &statsStore{
-		last: collectStats(sampleInterval),
+		last: collectStats(sampleInterval, upstreamURL),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go startStatsSampler(ctx, stats, sampleInterval)
+	go startStatsSampler(ctx, stats, sampleInterval, upstreamURL)
 
 	proxy := newProxyServer(upstreamURL)
 
