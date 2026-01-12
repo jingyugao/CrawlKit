@@ -1,10 +1,11 @@
 """Comprehensive tests for PagePool."""
-import asyncio
-import pytest
-from datetime import datetime
-from playwright.async_api import async_playwright, Browser, BrowserContext
 
-from pagepool import PagePool, PagePoolError, PoolNotStartedError
+import asyncio
+
+import pytest
+from playwright.async_api import Browser, async_playwright
+
+from pagepool import PagePool, PoolNotStartedError
 from pagepool.wrappers import PageWrapper
 
 
@@ -20,6 +21,7 @@ async def browser():
 @pytest.fixture
 async def simple_pool(browser: Browser):
     """Fixture for a simple PagePool instance."""
+
     async def create_context():
         return await browser.new_context()
 
@@ -40,6 +42,7 @@ class TestBasicFunctionality:
     @pytest.mark.asyncio
     async def test_pool_start_creates_idle_pages(self, browser: Browser):
         """Test that start() creates min_idle_pages during warmup."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -54,9 +57,9 @@ class TestBasicFunctionality:
 
         try:
             stats = pool.get_stats()
-            assert stats['idle_pages'] == 5, "Should have 5 idle pages after start"
-            assert stats['total_contexts'] >= 1, "Should have at least 1 context"
-            assert stats['started'] is True, "Pool should be started"
+            assert stats["idle_pages"] == 5, "Should have 5 idle pages after start"
+            assert stats["total_contexts"] >= 1, "Should have at least 1 context"
+            assert stats["started"] is True, "Pool should be started"
         finally:
             await pool.stop()
 
@@ -70,7 +73,7 @@ class TestBasicFunctionality:
         assert page_wrapper.use_count == 1
 
         # Use the page
-        await page_wrapper.obj.goto('about:blank')
+        await page_wrapper.obj.goto("about:blank")
 
         # Release the page
         await simple_pool.release_page(page_wrapper)
@@ -78,31 +81,30 @@ class TestBasicFunctionality:
 
         # Verify page returned to idle queue
         stats = simple_pool.get_stats()
-        assert stats['active_pages'] == 0
+        assert stats["active_pages"] == 0
 
     @pytest.mark.asyncio
     async def test_context_manager_usage(self, simple_pool: PagePool):
         """Test using pool.page() context manager."""
         async with simple_pool.page() as page:
             assert not page.is_closed()
-            await page.goto('about:blank')
+            await page.goto("about:blank")
             title = await page.title()
-            assert title == '', "about:blank should have empty title"
+            assert title == "", "about:blank should have empty title"
 
         # Page should be released after context manager exit
         stats = simple_pool.get_stats()
-        assert stats['active_pages'] == 0
+        assert stats["active_pages"] == 0
 
     @pytest.mark.asyncio
     async def test_page_cleared_on_release(self, simple_pool: PagePool):
         """Test that pages are navigated to about:blank on release."""
-        initial_idle = simple_pool.idle_pages.qsize()
 
         async with simple_pool.page() as page:
             # Navigate to a real page
-            await page.goto('data:text/html,<h1>Test</h1>')
+            await page.goto("data:text/html,<h1>Test</h1>")
             content = await page.content()
-            assert 'Test' in content
+            assert "Test" in content
 
         # After release, get the same page and verify it's cleared
         await asyncio.sleep(0.1)  # Give time for release
@@ -110,7 +112,7 @@ class TestBasicFunctionality:
         url = page_wrapper.obj.url
         await simple_pool.release_page(page_wrapper)
 
-        assert url == 'about:blank', "Page should be cleared to about:blank"
+        assert url == "about:blank", "Page should be cleared to about:blank"
 
 
 class TestHealthCheck:
@@ -119,6 +121,7 @@ class TestHealthCheck:
     @pytest.mark.asyncio
     async def test_default_health_check(self, browser: Browser):
         """Test default health check (browser.is_connected)."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -142,18 +145,15 @@ class TestHealthCheck:
     @pytest.mark.asyncio
     async def test_custom_health_check(self, browser: Browser):
         """Test custom health check function."""
-        check_called = {'count': 0}
+        check_called = {"count": 0}
 
         async def custom_health_check(page_wrapper: PageWrapper) -> bool:
-            check_called['count'] += 1
+            check_called["count"] += 1
             try:
                 # Verify page can execute JS
-                result = await asyncio.wait_for(
-                    page_wrapper.obj.evaluate("1 + 1"),
-                    timeout=1.0
-                )
+                result = await asyncio.wait_for(page_wrapper.obj.evaluate("1 + 1"), timeout=1.0)
                 return result == 2
-            except:
+            except Exception:
                 return False
 
         async def create_context():
@@ -171,7 +171,7 @@ class TestHealthCheck:
 
         try:
             page_wrapper = await pool.get_page()
-            assert check_called['count'] >= 1, "Custom health check should be called"
+            assert check_called["count"] >= 1, "Custom health check should be called"
             await pool.release_page(page_wrapper)
         finally:
             await pool.stop()
@@ -179,6 +179,7 @@ class TestHealthCheck:
     @pytest.mark.asyncio
     async def test_unhealthy_page_retry(self, browser: Browser):
         """Test that unhealthy pages trigger retry logic."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -212,6 +213,7 @@ class TestIdlePageManagement:
     @pytest.mark.asyncio
     async def test_background_refill_triggered(self, browser: Browser):
         """Test that background refill is triggered when idle < min."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -249,6 +251,7 @@ class TestIdlePageManagement:
     @pytest.mark.asyncio
     async def test_refill_respects_total_limit(self, browser: Browser):
         """Test that refill respects max_total_pages limit."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -272,7 +275,7 @@ class TestIdlePageManagement:
 
             # Check that total doesn't exceed limit
             stats = pool.get_stats()
-            assert stats['total_pages'] <= 8, "Total should not exceed max_total_pages"
+            assert stats["total_pages"] <= 8, "Total should not exceed max_total_pages"
 
             # Release pages
             for page in pages:
@@ -287,6 +290,7 @@ class TestTotalPagesLimit:
     @pytest.mark.asyncio
     async def test_release_destroys_when_total_at_limit(self, browser: Browser):
         """Test that pages are destroyed when total >= max_total_pages."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -307,7 +311,7 @@ class TestTotalPagesLimit:
                 pages.append(await pool.get_page())
 
             stats_before = pool.get_stats()
-            assert stats_before['active_pages'] == 6
+            assert stats_before["active_pages"] == 6
 
             # Release 1 page - should be destroyed (not returned) if at limit
             await pool.release_page(pages[0])
@@ -316,7 +320,7 @@ class TestTotalPagesLimit:
             stats_after = pool.get_stats()
 
             # Total should not exceed limit
-            assert stats_after['total_pages'] <= 8
+            assert stats_after["total_pages"] <= 8
 
             # Release remaining
             for page in pages[1:]:
@@ -327,6 +331,7 @@ class TestTotalPagesLimit:
     @pytest.mark.asyncio
     async def test_max_idle_pages_limit(self, browser: Browser):
         """Test that pages are destroyed when idle >= max_idle_pages."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -353,7 +358,7 @@ class TestTotalPagesLimit:
             await asyncio.sleep(0.2)
 
             stats = pool.get_stats()
-            assert stats['idle_pages'] <= 5, "Idle pages should respect max_idle_pages"
+            assert stats["idle_pages"] <= 5, "Idle pages should respect max_idle_pages"
         finally:
             await pool.stop()
 
@@ -364,6 +369,7 @@ class TestPageUsageLimit:
     @pytest.mark.asyncio
     async def test_page_destroyed_after_max_uses(self, browser: Browser):
         """Test that pages are destroyed after max_page_uses."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -409,6 +415,7 @@ class TestContextTTL:
     @pytest.mark.asyncio
     async def test_context_ttl_rotation(self, browser: Browser):
         """Test that contexts are rotated when approaching TTL."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -447,6 +454,7 @@ class TestContextTTL:
     @pytest.mark.asyncio
     async def test_draining_context_destroyed_after_pages_released(self, browser: Browser):
         """Test that draining contexts are destroyed when all pages released."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -491,6 +499,7 @@ class TestMaxPagesPerContext:
     @pytest.mark.asyncio
     async def test_creates_new_context_when_limit_reached(self, browser: Browser):
         """Test that new context is created when max_pages_per_context is reached."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -505,8 +514,6 @@ class TestMaxPagesPerContext:
         await pool.start()
 
         try:
-            initial_contexts = len(pool.contexts)
-
             # Get 4 pages (should create 2 contexts)
             pages = []
             for _ in range(4):
@@ -527,6 +534,7 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_pool_not_started_error(self, browser: Browser):
         """Test that operations fail when pool not started."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -542,6 +550,7 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_stop_closes_all_contexts(self, browser: Browser):
         """Test that stop() closes all contexts and pages."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -570,6 +579,7 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_context_manager_lifecycle(self, browser: Browser):
         """Test pool context manager (__aenter__/__aexit__)."""
+
         async def create_context():
             return await browser.new_context()
 
@@ -582,7 +592,7 @@ class TestLifecycle:
             assert pool._started is True
 
             async with pool.page() as page:
-                await page.goto('about:blank')
+                await page.goto("about:blank")
 
         # Pool should be stopped after context manager exit
         assert pool._started is False
@@ -594,29 +604,30 @@ class TestConcurrency:
     @pytest.mark.asyncio
     async def test_concurrent_page_usage(self, simple_pool: PagePool):
         """Test using multiple pages concurrently."""
+
         async def use_page(url: str):
             async with simple_pool.page() as page:
                 await page.goto(url)
                 return await page.title()
 
         urls = [
-            'data:text/html,<title>Page 1</title>',
-            'data:text/html,<title>Page 2</title>',
-            'data:text/html,<title>Page 3</title>',
-            'data:text/html,<title>Page 4</title>',
-            'data:text/html,<title>Page 5</title>',
+            "data:text/html,<title>Page 1</title>",
+            "data:text/html,<title>Page 2</title>",
+            "data:text/html,<title>Page 3</title>",
+            "data:text/html,<title>Page 4</title>",
+            "data:text/html,<title>Page 5</title>",
         ]
 
         # Use pages concurrently
         results = await asyncio.gather(*[use_page(url) for url in urls])
 
         assert len(results) == 5
-        assert 'Page 1' in results
-        assert 'Page 5' in results
+        assert "Page 1" in results
+        assert "Page 5" in results
 
         # All pages should be released
         stats = simple_pool.get_stats()
-        assert stats['active_pages'] == 0
+        assert stats["active_pages"] == 0
 
 
 class TestStatistics:
@@ -627,34 +638,33 @@ class TestStatistics:
         """Test get_stats() returns correct information."""
         stats = simple_pool.get_stats()
 
-        assert 'total_contexts' in stats
-        assert 'draining_contexts' in stats
-        assert 'idle_pages' in stats
-        assert 'active_pages' in stats
-        assert 'total_pages' in stats
-        assert 'started' in stats
+        assert "total_contexts" in stats
+        assert "draining_contexts" in stats
+        assert "idle_pages" in stats
+        assert "active_pages" in stats
+        assert "total_pages" in stats
+        assert "started" in stats
 
-        assert stats['started'] is True
-        assert stats['total_contexts'] >= 1
-        assert stats['idle_pages'] >= 0
-        assert stats['total_pages'] == stats['idle_pages'] + stats['active_pages']
+        assert stats["started"] is True
+        assert stats["total_contexts"] >= 1
+        assert stats["idle_pages"] >= 0
+        assert stats["total_pages"] == stats["idle_pages"] + stats["active_pages"]
 
     @pytest.mark.asyncio
     async def test_stats_update_on_get_release(self, simple_pool: PagePool):
         """Test that stats update correctly on get/release."""
         initial_stats = simple_pool.get_stats()
-        initial_active = initial_stats['active_pages']
-        initial_idle = initial_stats['idle_pages']
+        initial_active = initial_stats["active_pages"]
 
         # Get a page
         page_wrapper = await simple_pool.get_page()
 
         stats_after_get = simple_pool.get_stats()
-        assert stats_after_get['active_pages'] == initial_active + 1
+        assert stats_after_get["active_pages"] == initial_active + 1
 
         # Release the page
         await simple_pool.release_page(page_wrapper)
         await asyncio.sleep(0.1)
 
         stats_after_release = simple_pool.get_stats()
-        assert stats_after_release['active_pages'] == initial_active
+        assert stats_after_release["active_pages"] == initial_active

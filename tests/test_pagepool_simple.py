@@ -3,10 +3,12 @@
 This is a demo to show the test structure. For full integration tests,
 see test_pagepool.py (requires Playwright system dependencies).
 """
+
 import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
+from unittest.mock import MagicMock
+
+import pytest
 
 from pagepool import PagePool, PoolNotStartedError
 from pagepool.wrappers import ContextWrapper, PageWrapper
@@ -52,8 +54,8 @@ class MockPage:
 
     def __init__(self):
         self._closed = False
-        self._url = 'about:blank'
-        self.title_value = 'Mock Page'
+        self._url = "about:blank"
+        self.title_value = "Mock Page"
 
     def is_closed(self):
         return self._closed
@@ -215,14 +217,14 @@ class TestBasicMockFunctionality:
             assert page_wrapper.use_count == 1
 
             stats = pool.get_stats()
-            assert stats['active_pages'] == 1
+            assert stats["active_pages"] == 1
 
             # Release page
             await pool.release_page(page_wrapper)
 
             await asyncio.sleep(0.1)
             stats = pool.get_stats()
-            assert stats['active_pages'] == 0
+            assert stats["active_pages"] == 0
         finally:
             await pool.stop()
 
@@ -242,11 +244,11 @@ class TestBasicMockFunctionality:
         try:
             async with pool.page() as page:
                 assert not page.is_closed()
-                await page.goto('about:blank')
+                await page.goto("about:blank")
 
             # Page should be released
             stats = pool.get_stats()
-            assert stats['active_pages'] == 0
+            assert stats["active_pages"] == 0
         finally:
             await pool.stop()
 
@@ -265,9 +267,10 @@ class TestBasicMockFunctionality:
         await pool.start()
 
         try:
+
             async def use_page(n):
                 async with pool.page() as page:
-                    await page.goto(f'data:text/html,<h1>Page {n}</h1>')
+                    await page.goto(f"data:text/html,<h1>Page {n}</h1>")
                     await asyncio.sleep(0.01)
                     return await page.title()
 
@@ -279,7 +282,7 @@ class TestBasicMockFunctionality:
             # All pages should be released
             await asyncio.sleep(0.1)
             stats = pool.get_stats()
-            assert stats['active_pages'] == 0
+            assert stats["active_pages"] == 0
         finally:
             await pool.stop()
 
@@ -304,14 +307,14 @@ class TestBasicMockFunctionality:
                 pages.append(await pool.get_page())
 
             stats = pool.get_stats()
-            assert stats['total_pages'] <= 5
+            assert stats["total_pages"] <= 5
 
             # Release one - should be destroyed (not returned)
             await pool.release_page(pages[0])
             await asyncio.sleep(0.1)
 
             stats = pool.get_stats()
-            assert stats['total_pages'] <= 5
+            assert stats["total_pages"] <= 5
 
             # Release all
             for page in pages[1:]:
@@ -374,21 +377,21 @@ class TestBasicMockFunctionality:
         try:
             stats = pool.get_stats()
 
-            assert 'total_contexts' in stats
-            assert 'idle_pages' in stats
-            assert 'active_pages' in stats
-            assert 'total_pages' in stats
-            assert 'started' in stats
+            assert "total_contexts" in stats
+            assert "idle_pages" in stats
+            assert "active_pages" in stats
+            assert "total_pages" in stats
+            assert "started" in stats
 
-            assert stats['started'] is True
-            assert stats['total_contexts'] >= 1
-            assert stats['idle_pages'] == 3
-            assert stats['total_pages'] == stats['idle_pages'] + stats['active_pages']
+            assert stats["started"] is True
+            assert stats["total_contexts"] >= 1
+            assert stats["idle_pages"] == 3
+            assert stats["total_pages"] == stats["idle_pages"] + stats["active_pages"]
         finally:
             await pool.stop()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Run a simple demo
     async def demo():
         print("=" * 60)
@@ -415,7 +418,7 @@ if __name__ == '__main__':
 
         print("\n2. Getting a page...")
         async with pool.page() as page:
-            await page.goto('https://example.com')
+            await page.goto("https://example.com")
             print(f"   Page URL: {page.url}")
             print(f"   Stats: {pool.get_stats()}")
 
@@ -424,9 +427,10 @@ if __name__ == '__main__':
         print(f"   Stats: {pool.get_stats()}")
 
         print("\n4. Concurrent usage (5 pages)...")
+
         async def fetch(n):
             async with pool.page() as page:
-                await page.goto(f'https://example{n}.com')
+                await page.goto(f"https://example{n}.com")
                 return page.url
 
         results = await asyncio.gather(*[fetch(i) for i in range(5)])

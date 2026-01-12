@@ -1,24 +1,27 @@
 """Simplified PagePool for managing Playwright pages in a single browser."""
+
 import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Callable, Awaitable, AsyncIterator
+from typing import AsyncIterator, Awaitable, Callable
+
 from playwright.async_api import Browser, BrowserContext, Page
 
 from pagepool.wrappers import ContextWrapper, PageWrapper
-
 
 logger = logging.getLogger(__name__)
 
 
 class PagePoolError(Exception):
     """Base exception for PagePool errors."""
+
     pass
 
 
 class PoolNotStartedError(PagePoolError):
     """Raised when operations are attempted on a stopped pool."""
+
     pass
 
 
@@ -280,12 +283,12 @@ class PagePool:
         """
         total_active = sum(c.active_pages for c in self.contexts)
         return {
-            'total_contexts': len(self.contexts),
-            'draining_contexts': sum(1 for c in self.contexts if c.draining),
-            'idle_pages': self.idle_pages.qsize(),
-            'active_pages': total_active,
-            'total_pages': self.idle_pages.qsize() + total_active,
-            'started': self._started,
+            "total_contexts": len(self.contexts),
+            "draining_contexts": sum(1 for c in self.contexts if c.draining),
+            "idle_pages": self.idle_pages.qsize(),
+            "active_pages": total_active,
+            "total_pages": self.idle_pages.qsize() + total_active,
+            "started": self._started,
         }
 
     # Context Management
@@ -446,7 +449,9 @@ class PagePool:
                 # Re-check total pages limit before creating each page
                 total = self.idle_pages.qsize() + sum(c.active_pages for c in self.contexts)
                 if total >= self.max_total_pages:
-                    logger.debug(f"Refill stopped: total limit reached ({total}/{self.max_total_pages})")
+                    logger.debug(
+                        f"Refill stopped: total limit reached ({total}/{self.max_total_pages})"
+                    )
                     break
 
                 await self._create_idle_page()
@@ -503,8 +508,7 @@ class PagePool:
         """
         try:
             await asyncio.wait_for(
-                page.goto("about:blank", wait_until="domcontentloaded"),
-                timeout=5.0
+                page.goto("about:blank", wait_until="domcontentloaded"), timeout=5.0
             )
             return True
         except Exception as e:

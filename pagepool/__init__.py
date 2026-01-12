@@ -1,4 +1,5 @@
 """PagePool - Simplified Playwright page pool for single browser management."""
+
 from pagepool.pool import PagePool, PagePoolError, PoolNotStartedError
 from pagepool.wrappers import ContextWrapper, PageWrapper
 

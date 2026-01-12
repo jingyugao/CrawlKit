@@ -1,7 +1,9 @@
 """Wrapper classes for Playwright objects with lifecycle management."""
+
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
+
 from playwright.async_api import BrowserContext, Page
 
 
