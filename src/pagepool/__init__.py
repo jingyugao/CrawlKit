@@ -1,14 +1,15 @@
-"""PagePool - Simplified Playwright page pool for single browser management."""
-
+from pagepool.cluster import ClusterPagePool
+from pagepool.endpoint import SingleEndpointPool
 from pagepool.pool import PagePool, PagePoolError, PoolNotStartedError
-from pagepool.wrappers import ContextWrapper, PageWrapper
-
-__version__ = "0.2.0"
+from pagepool.types import EndpointConfig, PoolConfig, SceneConfig
 
 __all__ = [
     "PagePool",
-    "PagePoolError",
     "PoolNotStartedError",
-    "ContextWrapper",
-    "PageWrapper",
+    "PagePoolError",
+    "ClusterPagePool",
+    "SingleEndpointPool",
+    "EndpointConfig",
+    "PoolConfig",
+    "SceneConfig",
 ]

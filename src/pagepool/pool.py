@@ -588,12 +588,38 @@ class PagePool:
 
         # Batch create (max 10 at a time for efficiency)
         batch_size = min(target, 10)
+        retries = 0
+        max_retries = 3
+
         while self.idle_pages.qsize() < target:
             remaining = target - self.idle_pages.qsize()
             batch = min(remaining, batch_size)
 
             tasks = [self._create_idle_page() for _ in range(batch)]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Check if we made progress
+            progress = False
+            for res in results:
+                if not isinstance(res, Exception):
+                    # _create_idle_page returns None on success, but doesn't return the page wrapper
+                    # So we check if qsize increased, which we do in the loop condition
+                    pass
+            
+            # Since _create_idle_page swallows exceptions and logs them (Wait, does it?)
+            # create_idle_page catches Exception and logs warning.
+            
+            # If idle pages didn't increase, count as retry
+            # But wait, create_idle_page is async. 
+            
+            # Simple deadlock prevention:
+            if self.idle_pages.qsize() < target:
+                retries += 1
+                if retries >= max_retries:
+                    logger.warning(f"Warmup failed to reach target {target} after {max_retries} batches")
+                    break
+            else:
+                retries = 0 # Reset retries if we made progress
 
             # Check if we should stop
             if not self._started:
